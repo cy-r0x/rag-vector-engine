@@ -1,0 +1,27 @@
+---
+description: Ask the user for clarification instead of guessing when a request is ambiguous
+alwaysApply: true
+---
+
+# Always Ask If Unclear
+
+If a request is ambiguous, ask before acting. Do not guess and do not silently pick an interpretation.
+
+## When to ask
+
+- The request has more than one reasonable interpretation (e.g. "add stubs" could mean empty files or skeleton code).
+- Scope is unclear: which files, folders, services, or how much to change.
+- A choice affects architecture, dependencies, or the README design (new library, new service, new folder).
+- The action is destructive or hard to undo (deleting files, overwriting work, git history changes).
+- The request conflicts with an earlier instruction or with the README.
+
+## How to ask
+
+- Use the `AskQuestion` tool with concrete options; put the recommended option first.
+- Ask all open questions at once rather than one at a time.
+- State what you already know/assume so the user only answers what's actually open.
+
+## When not to ask
+
+- The answer is clear from the request, the codebase, the README, or earlier conversation.
+- It's a trivial detail with an obvious sensible default (naming, formatting) that is easy to change later.
