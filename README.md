@@ -12,8 +12,8 @@
 ```mermaid
 flowchart TD
     subgraph Client ["🏢 Onboarded Business"]
-        TenantUI["Next.js Dashboard<br/>(Upload & Document Status)"]
-        TenantWS["Next.js Chat UI<br/>(WebSocket Client)"]
+        TenantUI["Client App<br/>(Upload & Document Status)"]
+        TenantWS["Client Chat<br/>(WebSocket Client)"]
     end
 
     subgraph API_Gateway ["🚪 FastAPI Gateway"]
@@ -96,33 +96,6 @@ flowchart TD
 
 ```text
 rag-vector-engine/
-├── client/                     # Next.js 16 (App Router) + Tailwind CSS v4 frontend
-│   ├── app/
-│   │   ├── layout.tsx          # Root layout & global providers
-│   │   ├── page.tsx            # Landing / tenant onboarding
-│   │   ├── globals.css         # Tailwind entry
-│   │   ├── documents/
-│   │   │   └── page.tsx        # Upload & live document status
-│   │   └── chat/
-│   │       └── page.tsx        # Streaming chat with citations
-│   ├── components/
-│   │   ├── UploadDropzone.tsx  # Drag-and-drop file upload
-│   │   ├── DocumentTable.tsx   # Document list with status
-│   │   ├── StatusBadge.tsx     # QUEUED / PROCESSING / INDEXED / FAILED
-│   │   ├── ChatWindow.tsx      # Message list + input
-│   │   ├── MessageBubble.tsx   # Single chat message
-│   │   └── SourceCitations.tsx # Source chunks for an answer
-│   ├── lib/
-│   │   ├── api.ts              # REST client for the FastAPI gateway
-│   │   ├── ws.ts               # WebSocket chat client
-│   │   └── types.ts            # Shared API types
-│   ├── public/                 # Static assets
-│   ├── .env.local.example      # NEXT_PUBLIC_API_URL, NEXT_PUBLIC_WS_URL
-│   ├── next.config.ts          # Next.js config (Tailwind via Turbopack loader)
-│   ├── eslint.config.mjs
-│   ├── tsconfig.json
-│   └── package.json
-│
 ├── api/                        # Synchronous FastAPI service
 │   ├── main.py                 # App entrypoint & lifecycle
 │   ├── routes/
@@ -196,7 +169,6 @@ rag-vector-engine/
 
 ### 1. Prerequisites
 * Python 3.11+ (tested on 3.15)
-* Node.js 20+ (for the Next.js frontend)
 * Docker & Docker Compose
 * NVIDIA GPU (optional; only needed to run LightOn OCR locally on images and scanned PDFs)
 
@@ -241,15 +213,7 @@ Terminal 2 — Ingestion Worker:
 python -m workers.consumer
 ```
 
-Terminal 3 — Frontend (Next.js + Tailwind CSS):
-```bash
-cd client
-cp .env.local.example .env.local
-npm install
-npm run dev
-```
-
-Open http://localhost:3000 to onboard a tenant, upload documents, and chat.
+The frontend lives in a separate repository and talks to this API over HTTP and WebSockets.
 
 ---
 

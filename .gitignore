@@ -11,9 +11,3 @@ dist/
 build/
 .idea/
 .vscode/
-
-node_modules/
-.next/
-out/
-.env.local
-next-env.d.ts
