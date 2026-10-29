@@ -9,7 +9,7 @@ import aioboto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-from core.config import Settings, get_settings
+from common.config import Settings, get_settings
 
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _EXT_PATTERN = re.compile(r"^[a-z0-9]{1,10}$")

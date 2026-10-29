@@ -6,7 +6,7 @@ from fastapi import HTTPException, Request, status
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from core.tokens import JWTCodec, TokenError
+from common.auth import JWTCodec, TokenError
 
 logger = logging.getLogger("api.auth")
 

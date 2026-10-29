@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 25 * 1024 * 1024
     max_uncompressed_bytes: int = 200 * 1024 * 1024
 
+    rabbitmq_url: str = "amqp://rve:rve@localhost:5672/"
+    ingestion_queue: str = "ingestion.jobs"
+    consumer_prefetch: int = 10
+
     @field_validator("s3_endpoint_url", "s3_access_key_id", "s3_secret_access_key", mode="before")
     @classmethod
     def _empty_to_none(cls, value: str | None) -> str | None:

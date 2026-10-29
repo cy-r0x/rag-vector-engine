@@ -6,7 +6,7 @@ from pathlib import PurePath
 
 import filetype
 
-from core.config import get_settings
+from common.config import get_settings
 
 PDF = "application/pdf"
 PNG = "image/png"

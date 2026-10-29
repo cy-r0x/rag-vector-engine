@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from api.middleware.auth import JWTAuthMiddleware, get_token_payload, public, require_auth
-from core.tokens import JWTCodec
+from common.auth import JWTCodec
 
 SECRET = "unit-test-secret-that-is-at-least-32-chars"
 CODEC = JWTCodec(secret=SECRET)

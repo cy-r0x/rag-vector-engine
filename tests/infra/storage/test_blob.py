@@ -5,7 +5,7 @@ import uuid
 
 import pytest
 
-from storage.blob import ObjectNotFoundError, S3BlobStorage, object_key
+from infra.storage.blob import ObjectNotFoundError, S3BlobStorage, object_key
 
 ENDPOINT = os.getenv("TEST_S3_ENDPOINT_URL", "http://localhost:9000")
 ACCESS_KEY = os.getenv("TEST_S3_ACCESS_KEY_ID", "minioadmin")

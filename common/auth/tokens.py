@@ -5,7 +5,7 @@ from typing import Any
 
 import jwt
 
-from core.config import get_settings
+from common.config import get_settings
 
 REQUIRED_CLAIMS = ("exp", "sub", "business_id")
 RESERVED_CLAIMS = frozenset({"exp", "iat", "sub", "business_id"})

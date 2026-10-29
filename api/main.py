@@ -3,9 +3,9 @@ from fastapi import Depends, FastAPI
 from api.middleware.auth import JWTAuthMiddleware, public, require_auth
 from api.middleware.request_logger import RequestLoggingMiddleware
 from api.routes.routes import router
-from core.config import get_settings
-from core.logging import setup_logging
-from core.tokens import get_jwt_codec
+from common.auth import get_jwt_codec
+from common.config import get_settings
+from common.logger import setup_logging
 
 setup_logging(get_settings().log_level)
 

@@ -3,7 +3,7 @@ import time
 import jwt
 import pytest
 
-from core.tokens import JWTCodec, TokenError, TokenExpiredError, get_jwt_codec
+from common.auth import JWTCodec, TokenError, TokenExpiredError, get_jwt_codec
 
 SECRET = "unit-test-secret-that-is-at-least-32-chars"
 

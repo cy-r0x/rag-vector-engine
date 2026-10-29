@@ -136,23 +136,31 @@ rag-vector-engine/
 │       ├── request_logger.py   # One log line per request (method, path, status, duration, business_id)
 │       └── rate_limit.py       # Redis token bucket
 │
-├── core/                       # Shared configs and connectors
-│   ├── config.py               # Pydantic Settings
-│   ├── logging.py              # Log format/level setup (LOG_LEVEL)
-│   ├── tokens.py               # JWT sign (encode) & verify (decode)
-│   ├── db/
-│   │   ├── postgres.py         # SQLAlchemy / asyncpg
-│   │   └── redis.py            # Redis client
+├── common/                     # Shared building blocks (imported as `common.config`, `common.logger`, `common.auth`)
+│   ├── config/
+│   │   └── config.py           # Pydantic Settings
+│   ├── logger/
+│   │   └── logger.py           # Log format/level setup (LOG_LEVEL)
+│   └── auth/
+│       └── tokens.py           # JWT sign (encode) & verify (decode)
+│
+├── db/                         # Relational database
+│   ├── postgres.py             # SQLAlchemy / asyncpg
 │   └── models/
 │       ├── schema.py           # Relational schema
 │       └── events.py           # RabbitMQ job & status payloads
 │
-├── storage/                    # Storage adapters
-│   ├── blob.py                 # BlobStorage interface + S3-API adapter (MinIO or AWS S3)
-│   └── vector_db.py            # Qdrant client (with tenant pre-filtering)
+├── infra/                      # External service clients
+│   ├── queue/
+│   │   └── queue.py            # RabbitMQ connect / channel / standard queue declaration
+│   ├── redis/
+│   │   └── redis.py            # Redis client
+│   └── storage/
+│       ├── blob.py             # BlobStorage interface + S3-API adapter (MinIO or AWS S3)
+│       └── vector_db.py        # Qdrant client (with tenant pre-filtering)
 │
 ├── workers/                    # Ingestion pipeline worker
-│   ├── consumer.py             # RabbitMQ consumer loop with DLQ fallback
+│   ├── consumer.py             # RabbitMQ consumer on INGESTION_QUEUE (logs + acks for now; DLQ later)
 │   ├── extractor.py            # Routing by detected MIME + direct extraction to Markdown
 │   ├── ocr.py                  # LightOn OCR for images & scanned PDFs
 │   ├── chunker.py              # Markdown-aware structural splitter
@@ -165,12 +173,15 @@ rag-vector-engine/
 │   │   ├── test_auth.py        # JWT middleware tests
 │   │   ├── test_file_type.py   # Magic-byte upload validation tests
 │   │   └── test_main.py        # FastAPI app smoke test
-│   ├── core/
+│   ├── common/
 │   │   └── test_tokens.py      # JWT encode/decode tests
-│   └── storage/
-│       └── test_blob.py        # Blob adapter tests (integration tests run against MinIO)
+│   ├── infra/
+│   │   └── storage/
+│   │       └── test_blob.py    # Blob adapter tests (integration tests run against MinIO)
+│   └── workers/
+│       └── test_consumer.py    # Consumer integration test (runs against RabbitMQ)
 │
-├── docker-compose.yml          # Local infra (currently MinIO + bucket init)
+├── docker-compose.yml          # Local infra (currently MinIO + bucket init, RabbitMQ)
 ├── .env.example                # Sample environment configurations
 ├── pyproject.toml              # pytest configuration
 ├── requirements.txt            # Python dependencies
@@ -197,12 +208,12 @@ cd rag-vector-engine
 # Copy environment variables
 cp .env.example .env
 
-# Start local infrastructure (currently MinIO; Postgres, Redis, Qdrant,
-# and RabbitMQ are added to docker-compose.yml as they are built)
+# Start local infrastructure (currently MinIO and RabbitMQ; Postgres, Redis,
+# and Qdrant are added to docker-compose.yml as they are built)
 docker compose up -d
 ```
 
-The `minio-init` container creates the `documents` bucket and exits. The MinIO console is at http://localhost:9001 (`minioadmin` / `minioadmin`).
+The `minio-init` container creates the `documents` bucket and exits. The MinIO console is at http://localhost:9001 (`minioadmin` / `minioadmin`). The RabbitMQ management UI is at http://localhost:15672 (`rve` / `rve`).
 
 ### 3. Install Dependencies
 ```bash
@@ -392,7 +403,7 @@ socket.onmessage = (event) => {
 
 ## 🪣 Object Storage (MinIO now, AWS S3 later)
 
-Raw files are stored through a single adapter, `storage/blob.py`. Callers depend only on the `BlobStorage` interface (`put_object`, `get_object`, `head_object`, `exists`, `delete_object`, `delete_prefix`, `ensure_bucket`), obtained via `get_blob_storage()`.
+Raw files are stored through a single adapter, `infra/storage/blob.py`. Callers depend only on the `BlobStorage` interface (`put_object`, `get_object`, `head_object`, `exists`, `delete_object`, `delete_prefix`, `ensure_bucket`), obtained via `get_blob_storage()`.
 
 The implementation, `S3BlobStorage`, talks the S3 API (`aioboto3`). MinIO is S3-compatible, so **switching between local MinIO and AWS S3 is configuration only, with no code changes**:
 
@@ -449,7 +460,7 @@ Validation rules:
    )
    ```
    `business_id` (and `doc_id`, used for deletion and re-indexing) are created as keyword payload indexes on the collection, so the pre-filter is an index lookup rather than a scan.
-3. **JWT Authentication:** Tokens are signed and verified in one place, `core/tokens.py` (`JWTCodec.encode` / `JWTCodec.decode`, HS256 with `JWT_SECRET` of at least 32 characters, lifetime `JWT_EXPIRES_IN` seconds). `api/middleware/auth.py` reads `Authorization: Bearer <token>`, verifies it with the codec, and requires the `sub`, `business_id`, and `exp` claims. The decoded claims are attached to the request as `request.state.token_payload` (routes read them via the `get_token_payload` dependency). **Every route is protected by default** via the app-wide `require_auth` dependency; missing, malformed, expired, or wrongly signed tokens get `401`. To make a route public, decorate its endpoint/handler with `@public` (from `api.middleware.auth`):
+3. **JWT Authentication:** Tokens are signed and verified in one place, `common/auth/tokens.py` (`JWTCodec.encode` / `JWTCodec.decode`, HS256 with `JWT_SECRET` of at least 32 characters, lifetime `JWT_EXPIRES_IN` seconds). `api/middleware/auth.py` reads `Authorization: Bearer <token>`, verifies it with the codec, and requires the `sub`, `business_id`, and `exp` claims. The decoded claims are attached to the request as `request.state.token_payload` (routes read them via the `get_token_payload` dependency). **Every route is protected by default** via the app-wide `require_auth` dependency; missing, malformed, expired, or wrongly signed tokens get `401`. To make a route public, decorate its endpoint/handler with `@public` (from `api.middleware.auth`):
    ```python
    @public
    async def login(): ...

@@ -34,5 +34,22 @@ services:
         mc mb --ignore-existing "local/$$S3_BUCKET"
     restart: "no"
 
+  rabbitmq:
+    image: rabbitmq:4.1-management
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-rve}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-rve}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
 volumes:
   minio_data:
+  rabbitmq_data:
