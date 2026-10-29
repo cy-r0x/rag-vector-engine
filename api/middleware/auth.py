@@ -8,7 +8,17 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from core.tokens import JWTCodec, TokenError
 
-PUBLIC_PATHS = frozenset({"/", "/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"})
+PUBLIC_PATHS = frozenset(
+    {
+        "/",
+        "/docs",
+        "/docs/oauth2-redirect",
+        "/redoc",
+        "/openapi.json",
+        "/v1/auth/register",
+        "/v1/auth/login",
+    }
+)
 
 
 class JWTAuthMiddleware:
