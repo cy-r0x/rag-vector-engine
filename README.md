@@ -20,14 +20,14 @@ flowchart TD
         AuthMiddleware["Tenant Auth & Rate Limiting"]
         DocRouter["/v1/documents<br/>(upload, list, delete, reindex)"]
         FileValidator{"Byte-Level MIME Check<br/>(magic bytes + allowlist)"}
-        WSRouter["ws://.../v1/chat/ws/{tenant_id}"]
+        WSRouter["ws://.../v1/chat/ws/{business_id}"]
     end
 
     subgraph Storage ["💾 Persistence & Cache"]
         PG[("PostgreSQL<br/>(Metadata, Keys, Jobs,<br/>Chat History: 7-day retention)")]
         MinIO[("MinIO / S3<br/>(Raw Files)")]
         Redis[("Redis<br/>(Rate Limits & Sessions)")]
-        VectorDB[("Qdrant<br/>(Indexed tenant_id Payload)")]
+        VectorDB[("Qdrant<br/>(Indexed business_id Payload)")]
     end
 
     subgraph Async_Engine ["⚙️ Ingestion & Status Pipeline"]
@@ -67,7 +67,7 @@ flowchart TD
     TenantWS <-->|"Connect with ?token= API Key"| WSRouter
     WSRouter -->|"1. Token Check<br/>(key's tenant must match path)"| AuthMiddleware
     WSRouter -->|2. Query Embedding| WSRouter
-    WSRouter -->|"3. Prefiltered Vector Search<br/>(tenant_id == caller)"| VectorDB
+    WSRouter -->|"3. Prefiltered Vector Search<br/>(business_id == caller)"| VectorDB
     VectorDB -->|Top-K Markdown Chunks| WSRouter
     WSRouter -->|4. Prompt + Context| LLM["OpenAI / LLM Provider"]
     LLM -->|5. Token Stream| WSRouter
@@ -79,7 +79,7 @@ flowchart TD
 
 ## ✨ Core Features
 
-* **Multi-Tenant Isolation:** Complete logical tenant separation across relational storage, object storage prefixes (`minio://documents/{tenant_id}/...`), and vector indexes.
+* **Multi-Tenant Isolation:** Complete logical tenant separation across relational storage, object storage prefixes (`minio://documents/{business_id}/...`), and vector indexes.
 * **Byte-Level File Validation:** Uploaded files are untrusted. The client-supplied `Content-Type` header and file extension are ignored; the real MIME type is detected from the file's magic bytes and checked against an allowlist before anything is stored or queued (see [Upload Validation](#-upload-validation)).
 * **Direct Extraction First, OCR Only When Needed:** Text-based files are parsed natively into Markdown (PDF text layer, DOCX headings/tables, XLSX/CSV sheets as Markdown tables), which is faster and more accurate than OCR and needs no GPU. Only images (`.png`, `.jpg`, `.tiff`) and scanned PDFs without a text layer are routed to **LightOn OCR**, which transcribes multi-column layouts, tables, and forms into structured Markdown.
 * **Semantic & Markdown-Aware Chunking:** Chunks along `#`, `##`, and `###` headers while keeping tables intact. Metadata paths are prepended to every chunk vector.
@@ -87,8 +87,8 @@ flowchart TD
 * **Reliable Async Processing:** Ingestion jobs flow through a RabbitMQ work queue with retries and a Dead-Letter Queue (DLQ). Document status changes (`PROCESSING`, `INDEXED`, `FAILED`) are published to a RabbitMQ `document.events` queue and consumed by the API to update PostgreSQL.
 * **Status by Polling:** The dashboard polls `GET /v1/documents` to show live document status; there is no push channel for status updates.
 * **Deletion & Re-indexing:** Tenants can delete a document (raw file, vectors, and metadata) or re-index it from the stored source file, e.g. after changing the chunker or embedding model.
-* **Strict Prefiltered Vector Retrieval:** Queries apply hard pre-filtering on `tenant_id` before similarity calculation, eliminating cross-tenant data leaks. `tenant_id` is a payload index in Qdrant so the filter stays fast as tenants grow.
-* **Token-Authenticated WebSocket Streaming:** Real-time conversational interface (`/v1/chat/ws/{tenant_id}`) serving low-latency streamed token frames and source citations.
+* **Strict Prefiltered Vector Retrieval:** Queries apply hard pre-filtering on `business_id` before similarity calculation, eliminating cross-tenant data leaks. `business_id` is a payload index in Qdrant so the filter stays fast as tenants grow.
+* **Token-Authenticated WebSocket Streaming:** Real-time conversational interface (`/v1/chat/ws/{business_id}`) serving low-latency streamed token frames and source citations.
 * **Chat History with 7-Day Retention:** Each chat turn (question, answer, cited sources) is stored in PostgreSQL per tenant and session. Rows older than 7 days are purged by a scheduled cleanup job.
 
 ---
@@ -146,7 +146,7 @@ rag-vector-engine/
 │       └── events.py           # RabbitMQ job & status payloads
 │
 ├── storage/                    # Storage adapters
-│   ├── blob.py                 # MinIO / S3 client
+│   ├── blob.py                 # BlobStorage interface + S3-API adapter (MinIO or AWS S3)
 │   └── vector_db.py            # Qdrant client (with tenant pre-filtering)
 │
 ├── workers/                    # Ingestion pipeline worker
@@ -157,9 +157,15 @@ rag-vector-engine/
 │   ├── embedder.py             # Batched text embedding
 │   └── publisher.py            # RabbitMQ document status publisher
 │
-├── docker-compose.yml          # Postgres, MinIO, Redis, Qdrant, RabbitMQ
+├── tests/                      # pytest suite
+│   └── storage/
+│       └── test_blob.py        # Blob adapter tests (integration tests run against MinIO)
+│
+├── docker-compose.yml          # Local infra (currently MinIO + bucket init)
 ├── .env.example                # Sample environment configurations
-└── requirements.txt            # Python dependencies
+├── pyproject.toml              # pytest configuration
+├── requirements.txt            # Python dependencies
+└── requirements-dev.txt        # Dev/test dependencies (pytest)
 ```
 
 ---
@@ -167,7 +173,7 @@ rag-vector-engine/
 ## 🚀 Quickstart
 
 ### 1. Prerequisites
-* Python 3.11+
+* Python 3.11+ (tested on 3.15)
 * Node.js 20+ (for the Next.js frontend)
 * Docker & Docker Compose
 * NVIDIA GPU (optional; only needed to run LightOn OCR locally on images and scanned PDFs)
@@ -182,15 +188,24 @@ cd rag-vector-engine
 # Copy environment variables
 cp .env.example .env
 
-# Start Postgres, Redis, MinIO, Qdrant, and RabbitMQ
+# Start local infrastructure (currently MinIO; Postgres, Redis, Qdrant,
+# and RabbitMQ are added to docker-compose.yml as they are built)
 docker compose up -d
 ```
+
+The `minio-init` container creates the `documents` bucket and exits. The MinIO console is at http://localhost:9001 (`minioadmin` / `minioadmin`).
 
 ### 3. Install Dependencies
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+For development and tests, install `requirements-dev.txt` instead and run the suite (MinIO integration tests are skipped automatically if MinIO isn't running):
+```bash
+pip install -r requirements-dev.txt
+pytest -v
 ```
 
 ### 4. Run Migrations & Start Services
@@ -230,7 +245,7 @@ curl -X POST http://localhost:8000/v1/tenants/onboard \
 **Response:**
 ```json
 {
-  "tenant_id": "tnt_98a72b1c",
+  "business_id": "biz_98a72b1c",
   "api_key": "rve_live_8f04c6a461bdfa3754e",
   "message": "Store this API key safely; it cannot be retrieved again."
 }
@@ -254,7 +269,7 @@ curl -X POST http://localhost:8000/v1/documents/upload \
   "status": "QUEUED",
   "filename": "quarterly_report.pdf",
   "detected_mime": "application/pdf",
-  "minio_key": "tnt_98a72b1c/doc_e4c3a102/source.pdf"
+  "minio_key": "biz_98a72b1c/doc_e4c3a102/source.pdf"
 }
 ```
 
@@ -298,7 +313,7 @@ A single document can be fetched with `GET /v1/documents/{doc_id}`.
 ---
 
 ### 4. Delete a Document
-Removes the document's vectors from Qdrant (filtered by `tenant_id` **and** `doc_id`), its objects under `{tenant_id}/{doc_id}/` in MinIO, and its PostgreSQL record.
+Removes the document's vectors from Qdrant (filtered by `business_id` **and** `doc_id`), its objects under `{business_id}/{doc_id}/` in MinIO, and its PostgreSQL record.
 
 ```bash
 curl -X DELETE http://localhost:8000/v1/documents/doc_e4c3a102 \
@@ -330,13 +345,13 @@ Deleting or re-indexing a document that is currently `QUEUED` or `PROCESSING` re
 ---
 
 ### 6. Query via Authenticated WebSocket
-Connect client applications to the real-time inference gateway. The API key is passed as the `token` query parameter. The server resolves the tenant from the key and closes the connection if it doesn't match the `{tenant_id}` in the path.
+Connect client applications to the real-time inference gateway. The API key is passed as the `token` query parameter. The server resolves the tenant from the key and closes the connection if it doesn't match the `{business_id}` in the path.
 
 ```javascript
-const tenantId = "tnt_98a72b1c";
+const businessId = "biz_98a72b1c";
 const apiKey = "rve_live_8f04c6a461bdfa3754e";
 
-const socket = new WebSocket(`ws://localhost:8000/v1/chat/ws/${tenantId}?token=${apiKey}`);
+const socket = new WebSocket(`ws://localhost:8000/v1/chat/ws/${businessId}?token=${apiKey}`);
 
 socket.onopen = () => {
   // Submit customer question
@@ -356,6 +371,26 @@ socket.onmessage = (event) => {
   }
 };
 ```
+
+---
+
+## 🪣 Object Storage (MinIO now, AWS S3 later)
+
+Raw files are stored through a single adapter, `storage/blob.py`. Callers depend only on the `BlobStorage` interface (`put_object`, `get_object`, `head_object`, `exists`, `delete_object`, `delete_prefix`, `ensure_bucket`), obtained via `get_blob_storage()`.
+
+The implementation, `S3BlobStorage`, talks the S3 API (`aioboto3`). MinIO is S3-compatible, so **switching between local MinIO and AWS S3 is configuration only, with no code changes**:
+
+| Variable | Local MinIO | AWS S3 |
+|----------|-------------|--------|
+| `S3_ENDPOINT_URL` | `http://localhost:9000` | empty |
+| `S3_FORCE_PATH_STYLE` | `true` | `false` |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | MinIO root credentials | IAM keys, or empty to use the default AWS credential chain (IAM role, profile) |
+| `S3_REGION` | `us-east-1` | your bucket's region |
+| `S3_BUCKET` | `documents` | your bucket name |
+
+Object keys are always built with `object_key(business_id, doc_id, ext)` → `{business_id}/{doc_id}/source.{ext}`, which rejects any ID or extension that could escape the tenant prefix.
+
+> **MinIO image:** the official `minio/minio` images are no longer published on Docker Hub, so `docker-compose.yml` uses the community-maintained build [`pgsty/minio`](https://hub.docker.com/r/pgsty/minio), pinned to a specific release.
 
 ---
 
@@ -385,21 +420,21 @@ Validation rules:
 
 ## 🛡️ Tenant Isolation & Security Guarantees
 
-1. **Object Storage:** Documents are stored using strict tenant prefixes: `s3://bucket/{tenant_id}/{doc_id}/source.{ext}`, where `ext` comes from the detected MIME type, not the uploaded filename.
-2. **Vector Space:** Chunks are tagged with a non-bypassable `tenant_id` payload field. All vector retrieval queries execute an indexed exact-match pre-filter:
+1. **Object Storage:** Documents are stored using strict tenant prefixes: `s3://bucket/{business_id}/{doc_id}/source.{ext}`, where `ext` comes from the detected MIME type, not the uploaded filename.
+2. **Vector Space:** Chunks are tagged with a non-bypassable `business_id` payload field. All vector retrieval queries execute an indexed exact-match pre-filter:
    ```python
    models.Filter(
        must=[
            models.FieldCondition(
-               key="tenant_id",
-               match=models.MatchValue(value=authenticated_tenant_id)
+               key="business_id",
+               match=models.MatchValue(value=authenticated_business_id)
            )
        ]
    )
    ```
-   `tenant_id` (and `doc_id`, used for deletion and re-indexing) are created as keyword payload indexes on the collection, so the pre-filter is an index lookup rather than a scan.
+   `business_id` (and `doc_id`, used for deletion and re-indexing) are created as keyword payload indexes on the collection, so the pre-filter is an index lookup rather than a scan.
 3. **API Keys:** Plaintext API keys are never stored; only high-entropy `SHA-256` hashes are persisted and verified.
-4. **Tenant Comes from the Key:** The tenant is always resolved from the API key. On the WebSocket route, a `{tenant_id}` path value that doesn't match the key's tenant is rejected.
+4. **Tenant Comes from the Key:** The tenant is always resolved from the API key. On the WebSocket route, a `{business_id}` path value that doesn't match the key's tenant is rejected.
 5. **Untrusted Uploads:** File types are validated from raw bytes, never from headers or extensions; see [Upload Validation](#-upload-validation).
 6. **Chat History Retention:** Stored chat turns are scoped to the tenant and deleted after 7 days.
 
