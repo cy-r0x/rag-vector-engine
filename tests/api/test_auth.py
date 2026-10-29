@@ -24,8 +24,8 @@ def client() -> TestClient:
     app = FastAPI()
     app.add_middleware(JWTAuthMiddleware, codec=CODEC)
 
-    @app.get("/")
-    async def root():
+    @app.get("/health")
+    async def health():
         return {"public": True}
 
     @app.get("/me")
@@ -36,7 +36,7 @@ def client() -> TestClient:
 
 
 def test_public_path_needs_no_token(client: TestClient):
-    assert client.get("/").status_code == 200
+    assert client.get("/health").status_code == 200
 
 
 def test_valid_token_attaches_payload(client: TestClient):

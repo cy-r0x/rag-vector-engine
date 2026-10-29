@@ -6,10 +6,10 @@ from api.main import app
 client = TestClient(app)
 
 
-def test_root():
-    response = client.get("/")
+def test_health_is_public():
+    response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"service": "rag-vector-engine", "status": "ok"}
+    assert response.json() == {"status": "ok"}
 
 
 @pytest.mark.parametrize("path", ["/v1/auth/register", "/v1/auth/login"])

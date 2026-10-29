@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Iterable
 from typing import Any
 
@@ -8,9 +9,11 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from core.tokens import JWTCodec, TokenError
 
+logger = logging.getLogger("api.auth")
+
 PUBLIC_PATHS = frozenset(
     {
-        "/",
+        "/health",
         "/docs",
         "/docs/oauth2-redirect",
         "/redoc",
@@ -39,13 +42,13 @@ class JWTAuthMiddleware:
 
         token = _bearer_token(Headers(scope=scope).get("authorization"))
         if token is None:
-            await _unauthorized("Missing or malformed Authorization header")(scope, receive, send)
+            await _reject(scope, receive, send, "Missing or malformed Authorization header")
             return
 
         try:
             payload = self.codec.decode(token)
         except TokenError as exc:
-            await _unauthorized(str(exc))(scope, receive, send)
+            await _reject(scope, receive, send, str(exc))
             return
 
         scope.setdefault("state", {})["token_payload"] = payload
@@ -60,12 +63,14 @@ def _bearer_token(authorization: str | None) -> str | None:
     return token
 
 
-def _unauthorized(detail: str) -> JSONResponse:
-    return JSONResponse(
-        {"detail": detail},
+async def _reject(scope: Scope, receive: Receive, send: Send, reason: str) -> None:
+    logger.warning("Rejected %s %s: %s", scope["method"], scope["path"], reason)
+    response = JSONResponse(
+        {"detail": reason},
         status_code=status.HTTP_401_UNAUTHORIZED,
         headers={"WWW-Authenticate": "Bearer"},
     )
+    await response(scope, receive, send)
 
 
 def get_token_payload(request: Request) -> dict[str, Any]:
