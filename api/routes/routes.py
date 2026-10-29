@@ -1,13 +1,8 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter
+
+from api.handlers import auth
 
 router = APIRouter(prefix="/v1")
 
-
-@router.post("/auth/register")
-async def register() -> None:
-    raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Not implemented")
-
-
-@router.post("/auth/login")
-async def login() -> None:
-    raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Not implemented")
+router.add_api_route("/auth/register", auth.register, methods=["POST"])
+router.add_api_route("/auth/login", auth.login, methods=["POST"])

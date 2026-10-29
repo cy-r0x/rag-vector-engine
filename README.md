@@ -128,6 +128,7 @@ rag-vector-engine/
 │   ├── routes/
 │   │   └── routes.py           # All routes: onboarding, documents, WebSocket chat (split later if needed)
 │   ├── handlers/               # Business logic called by routes (routes stay thin)
+│   │   └── auth.py             # register / login
 │   ├── validators/
 │   │   └── file_type.py        # Byte-level MIME sniffing & allowlist
 │   └── middleware/
@@ -160,6 +161,7 @@ rag-vector-engine/
 │   ├── conftest.py             # Test env (JWT_SECRET)
 │   ├── api/
 │   │   ├── test_auth.py        # JWT middleware tests
+│   │   ├── test_file_type.py   # Magic-byte upload validation tests
 │   │   └── test_main.py        # FastAPI app smoke test
 │   ├── core/
 │   │   └── test_tokens.py      # JWT encode/decode tests
@@ -408,7 +410,7 @@ Object keys are always built with `object_key(business_id, doc_id, ext)` → `{b
 
 ## 🔍 Upload Validation
 
-Uploaded documents are treated as untrusted input. The client-supplied `Content-Type` header and file extension are **never** trusted. Instead, `api/validators/file_type.py` inspects the raw bytes of the file (magic-number sniffing via `libmagic` / `python-magic`) and only accepts types on the allowlist:
+Uploaded documents are treated as untrusted input. The client-supplied `Content-Type` header and file extension are **never** trusted. Instead, `api/validators/file_type.py` (`detect_file_type`) inspects the raw bytes of the file and only accepts types on the allowlist. Magic-number sniffing uses the pure-Python [`filetype`](https://pypi.org/project/filetype/) package (no native `libmagic` needed), with our own checks on top for ZIP containers and CSV, which magic bytes alone can't validate:
 
 | Type | Detected MIME | Byte-level check |
 |------|---------------|------------------|
@@ -418,14 +420,14 @@ Uploaded documents are treated as untrusted input. The client-supplied `Content-
 | TIFF | `image/tiff` | Starts with `49 49 2A 00` or `4D 4D 00 2A` |
 | DOCX | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | ZIP header `50 4B 03 04` **and** archive contains `word/document.xml` |
 | XLSX | `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` | ZIP header `50 4B 03 04` **and** archive contains `xl/workbook.xml` |
-| CSV | `text/csv` | No magic bytes: must decode as UTF-8, contain no NUL bytes, and parse as delimited rows |
+| CSV | `text/csv` | No magic bytes: must decode as UTF-8, contain no NUL bytes, and parse as delimited rows (`,` `;` tab or `\|`) with a consistent column count of at least 2 |
 
 Validation rules:
 
 1. **Detected type wins.** The MIME type detected from the bytes is the only one used downstream. It is stored in PostgreSQL and passed in the RabbitMQ job payload, and the worker routes extraction/OCR by it.
 2. **Reject on mismatch.** Anything not on the allowlist, or whose bytes contradict the declared type, is rejected with `415` before it reaches MinIO or the queue.
 3. **Inspect ZIP containers.** DOCX and XLSX are ZIP archives, so the archive's entries are checked to tell them apart from arbitrary ZIPs. Macro-enabled documents (containing `vbaProject.bin`) are rejected, and total uncompressed size is capped to block zip bombs.
-4. **Size limit.** Uploads above a configured maximum size are rejected before sniffing.
+4. **Size limit.** Uploads above `MAX_UPLOAD_BYTES` (default 25 MiB) are rejected before sniffing; DOCX/XLSX archives whose total uncompressed size exceeds `MAX_UNCOMPRESSED_BYTES` (default 200 MiB) are rejected as zip bombs.
 5. **Safe storage keys.** The original filename is kept only as metadata; object keys are built from server-generated IDs so user input can't cause path traversal.
 
 ---

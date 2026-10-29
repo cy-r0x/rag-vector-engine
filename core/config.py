@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expires_in: int = 3600
 
+    max_upload_bytes: int = 25 * 1024 * 1024
+    max_uncompressed_bytes: int = 200 * 1024 * 1024
+
     @field_validator("s3_endpoint_url", "s3_access_key_id", "s3_secret_access_key", mode="before")
     @classmethod
     def _empty_to_none(cls, value: str | None) -> str | None:

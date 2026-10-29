@@ -1,6 +1,7 @@
 fastapi>=0.115
 uvicorn>=0.30
 pyjwt>=2.9
+filetype>=1.2
 aioboto3>=13.0
 pydantic>=2.7
 pydantic-settings>=2.3
