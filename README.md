@@ -136,13 +136,15 @@ rag-vector-engine/
 │       ├── request_logger.py   # One log line per request (method, path, status, duration, business_id)
 │       └── rate_limit.py       # Redis token bucket
 │
-├── common/                     # Shared building blocks (imported as `common.config`, `common.logger`, `common.auth`)
+├── common/                     # Shared building blocks (imported as `common.config`, `common.logger`, `common.auth`, `common.decorators`)
 │   ├── config/
 │   │   └── config.py           # Pydantic Settings
 │   ├── logger/
 │   │   └── logger.py           # Log format/level setup (LOG_LEVEL)
-│   └── auth/
-│       └── tokens.py           # JWT sign (encode) & verify (decode)
+│   ├── auth/
+│   │   └── tokens.py           # JWT sign (encode) & verify (decode)
+│   └── decorators/
+│       └── public.py           # @public: mark a route as reachable without a token
 │
 ├── db/                         # Relational database
 │   ├── postgres.py             # SQLAlchemy / asyncpg
@@ -460,7 +462,7 @@ Validation rules:
    )
    ```
    `business_id` (and `doc_id`, used for deletion and re-indexing) are created as keyword payload indexes on the collection, so the pre-filter is an index lookup rather than a scan.
-3. **JWT Authentication:** Tokens are signed and verified in one place, `common/auth/tokens.py` (`JWTCodec.encode` / `JWTCodec.decode`, HS256 with `JWT_SECRET` of at least 32 characters, lifetime `JWT_EXPIRES_IN` seconds). `api/middleware/auth.py` reads `Authorization: Bearer <token>`, verifies it with the codec, and requires the `sub`, `business_id`, and `exp` claims. The decoded claims are attached to the request as `request.state.token_payload` (routes read them via the `get_token_payload` dependency). **Every route is protected by default** via the app-wide `require_auth` dependency; missing, malformed, expired, or wrongly signed tokens get `401`. To make a route public, decorate its endpoint/handler with `@public` (from `api.middleware.auth`):
+3. **JWT Authentication:** Tokens are signed and verified in one place, `common/auth/tokens.py` (`JWTCodec.encode` / `JWTCodec.decode`, HS256 with `JWT_SECRET` of at least 32 characters, lifetime `JWT_EXPIRES_IN` seconds). `api/middleware/auth.py` reads `Authorization: Bearer <token>`, verifies it with the codec, and requires the `sub`, `business_id`, and `exp` claims. The decoded claims are attached to the request as `request.state.token_payload` (routes read them via the `get_token_payload` dependency). **Every route is protected by default** via the app-wide `require_auth` dependency; missing, malformed, expired, or wrongly signed tokens get `401`. To make a route public, decorate its endpoint/handler with `@public` (from `common.decorators`):
    ```python
    @public
    async def login(): ...

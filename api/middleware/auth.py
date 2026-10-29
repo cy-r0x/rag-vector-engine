@@ -1,25 +1,16 @@
 import logging
-from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any
 
 from fastapi import HTTPException, Request, status
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from common.auth import JWTCodec, TokenError
+from common.decorators import is_public
 
 logger = logging.getLogger("api.auth")
 
-_PUBLIC_ATTR = "__auth_public__"
 _MISSING_TOKEN = "Missing or malformed Authorization header"
-
-EndpointT = TypeVar("EndpointT", bound=Callable[..., Any])
-
-
-def public(endpoint: EndpointT) -> EndpointT:
-    """Mark a route endpoint as reachable without a token. Every other route requires one."""
-    setattr(endpoint, _PUBLIC_ATTR, True)
-    return endpoint
 
 
 class JWTAuthMiddleware:
@@ -49,7 +40,7 @@ class JWTAuthMiddleware:
 def require_auth(request: Request) -> None:
     """App-wide dependency: requires a valid token unless the matched endpoint is `@public`."""
     route = request.scope.get("route")
-    if getattr(getattr(route, "endpoint", None), _PUBLIC_ATTR, False):
+    if is_public(getattr(route, "endpoint", None)):
         return
     if getattr(request.state, "token_payload", None) is not None:
         return

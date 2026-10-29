@@ -1,6 +1,6 @@
 from fastapi import HTTPException, status
 
-from api.middleware.auth import public
+from common.decorators import public
 
 
 @public
