@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     s3_bucket: str = "documents"
     s3_force_path_style: bool = False
 
+    jwt_secret: str = ""
+    jwt_algorithm: str = "HS256"
+    jwt_expires_in: int = 3600
+
     @field_validator("s3_endpoint_url", "s3_access_key_id", "s3_secret_access_key", mode="before")
     @classmethod
     def _empty_to_none(cls, value: str | None) -> str | None:

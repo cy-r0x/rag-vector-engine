@@ -17,7 +17,7 @@ flowchart TD
     end
 
     subgraph API_Gateway ["🚪 FastAPI Gateway"]
-        AuthMiddleware["Tenant Auth & Rate Limiting"]
+        AuthMiddleware["JWT Auth & Rate Limiting"]
         DocRouter["/v1/documents<br/>(upload, list, delete, reindex)"]
         FileValidator{"Byte-Level MIME Check<br/>(magic bytes + allowlist)"}
         WSRouter["ws://.../v1/chat/ws/{business_id}"]
@@ -41,9 +41,8 @@ flowchart TD
     end
 
     %% Upload & Ingestion Flow
-    TenantUI -->|1. Upload Doc + Bearer Key| DocRouter
-    DocRouter -->|Validate Tenant| AuthMiddleware
-    AuthMiddleware -.-> PG
+    TenantUI -->|1. Upload Doc + Bearer JWT| DocRouter
+    DocRouter -->|Verify JWT| AuthMiddleware
     DocRouter -->|2. Sniff File Header| FileValidator
     FileValidator -.->|"Rejected → 415"| TenantUI
     FileValidator -->|"3. Stream Raw File"| MinIO
@@ -64,8 +63,8 @@ flowchart TD
     TenantUI -.->|"11. Poll GET /v1/documents"| DocRouter
 
     %% Query & Chat Flow
-    TenantWS <-->|"Connect with ?token= API Key"| WSRouter
-    WSRouter -->|"1. Token Check<br/>(key's tenant must match path)"| AuthMiddleware
+    TenantWS <-->|"Connect with ?token= JWT"| WSRouter
+    WSRouter -->|"1. Token Check<br/>(JWT business_id must match path)"| AuthMiddleware
     WSRouter -->|2. Query Embedding| WSRouter
     WSRouter -->|"3. Prefiltered Vector Search<br/>(business_id == caller)"| VectorDB
     VectorDB -->|Top-K Markdown Chunks| WSRouter
@@ -128,14 +127,16 @@ rag-vector-engine/
 │   ├── main.py                 # App entrypoint & lifecycle
 │   ├── routes/
 │   │   └── routes.py           # All routes: onboarding, documents, WebSocket chat (split later if needed)
+│   ├── handlers/               # Business logic called by routes (routes stay thin)
 │   ├── validators/
 │   │   └── file_type.py        # Byte-level MIME sniffing & allowlist
 │   └── middleware/
-│       ├── auth.py             # SHA-256 hashed API key validation
+│       ├── auth.py             # JWT Bearer verification; claims → request.state.token_payload
 │       └── rate_limit.py       # Redis token bucket
 │
 ├── core/                       # Shared configs and connectors
 │   ├── config.py               # Pydantic Settings
+│   ├── tokens.py               # JWT sign (encode) & verify (decode)
 │   ├── db/
 │   │   ├── postgres.py         # SQLAlchemy / asyncpg
 │   │   └── redis.py            # Redis client
@@ -156,8 +157,12 @@ rag-vector-engine/
 │   └── publisher.py            # RabbitMQ document status publisher
 │
 ├── tests/                      # pytest suite
+│   ├── conftest.py             # Test env (JWT_SECRET)
 │   ├── api/
+│   │   ├── test_auth.py        # JWT middleware tests
 │   │   └── test_main.py        # FastAPI app smoke test
+│   ├── core/
+│   │   └── test_tokens.py      # JWT encode/decode tests
 │   └── storage/
 │       └── test_blob.py        # Blob adapter tests (integration tests run against MinIO)
 │
@@ -234,7 +239,7 @@ Open http://localhost:3000 to onboard a tenant, upload documents, and chat.
 ## 🔌 API & Integration Guide
 
 ### 1. Onboard a Business
-Generate a scoped API key and tenant partition.
+Create a business partition and receive a signed JWT access token. Send it as `Authorization: Bearer <token>` on every other request.
 
 ```bash
 curl -X POST http://localhost:8000/v1/tenants/onboard \
@@ -246,9 +251,16 @@ curl -X POST http://localhost:8000/v1/tenants/onboard \
 ```json
 {
   "business_id": "biz_98a72b1c",
-  "api_key": "rve_live_8f04c6a461bdfa3754e",
-  "message": "Store this API key safely; it cannot be retrieved again."
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "bearer",
+  "expires_in": 3600
 }
+```
+
+The examples below assume the token is stored in a shell variable:
+
+```bash
+export ACCESS_TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 ```
 
 ---
@@ -258,7 +270,7 @@ Upload PDF, DOCX, Excel, CSV, or image files into the tenant's isolated ingestio
 
 ```bash
 curl -X POST http://localhost:8000/v1/documents/upload \
-  -H "Authorization: Bearer rve_live_8f04c6a461bdfa3754e" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
   -F "file=@quarterly_report.pdf"
 ```
 
@@ -290,7 +302,7 @@ There is no push channel for ingestion status; clients poll the document list (t
 
 ```bash
 curl http://localhost:8000/v1/documents \
-  -H "Authorization: Bearer rve_live_8f04c6a461bdfa3754e"
+  -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
 **Response:**
@@ -317,7 +329,7 @@ Removes the document's vectors from Qdrant (filtered by `business_id` **and** `d
 
 ```bash
 curl -X DELETE http://localhost:8000/v1/documents/doc_e4c3a102 \
-  -H "Authorization: Bearer rve_live_8f04c6a461bdfa3754e"
+  -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
 **Response:** `204 No Content`
@@ -329,7 +341,7 @@ Deletes the document's existing vectors and re-queues an ingestion job from the 
 
 ```bash
 curl -X POST http://localhost:8000/v1/documents/doc_e4c3a102/reindex \
-  -H "Authorization: Bearer rve_live_8f04c6a461bdfa3754e"
+  -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
 **Response:**
@@ -345,13 +357,13 @@ Deleting or re-indexing a document that is currently `QUEUED` or `PROCESSING` re
 ---
 
 ### 6. Query via Authenticated WebSocket
-Connect client applications to the real-time inference gateway. The API key is passed as the `token` query parameter. The server resolves the tenant from the key and closes the connection if it doesn't match the `{business_id}` in the path.
+Connect client applications to the real-time inference gateway. Browsers can't set headers on WebSocket connections, so the JWT is passed as the `token` query parameter and verified by the WebSocket route itself. The server closes the connection if the token's `business_id` claim doesn't match the `{business_id}` in the path.
 
 ```javascript
 const businessId = "biz_98a72b1c";
-const apiKey = "rve_live_8f04c6a461bdfa3754e";
+const accessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...";
 
-const socket = new WebSocket(`ws://localhost:8000/v1/chat/ws/${businessId}?token=${apiKey}`);
+const socket = new WebSocket(`ws://localhost:8000/v1/chat/ws/${businessId}?token=${accessToken}`);
 
 socket.onopen = () => {
   // Submit customer question
@@ -433,8 +445,8 @@ Validation rules:
    )
    ```
    `business_id` (and `doc_id`, used for deletion and re-indexing) are created as keyword payload indexes on the collection, so the pre-filter is an index lookup rather than a scan.
-3. **API Keys:** Plaintext API keys are never stored; only high-entropy `SHA-256` hashes are persisted and verified.
-4. **Tenant Comes from the Key:** The tenant is always resolved from the API key. On the WebSocket route, a `{business_id}` path value that doesn't match the key's tenant is rejected.
+3. **JWT Authentication:** Tokens are signed and verified in one place, `core/tokens.py` (`JWTCodec.encode` / `JWTCodec.decode`, HS256 with `JWT_SECRET` of at least 32 characters, lifetime `JWT_EXPIRES_IN` seconds). `api/middleware/auth.py` reads `Authorization: Bearer <token>`, verifies it with the codec, and requires the `sub`, `business_id`, and `exp` claims. The decoded claims are attached to the request as `request.state.token_payload` (routes read them via the `get_token_payload` dependency). Missing, malformed, expired, or wrongly signed tokens get `401`. Only `/`, `/docs`, `/redoc`, and `/openapi.json` are public.
+4. **Business Comes from the Token:** `business_id` is always taken from the verified token, never from request bodies. On the WebSocket route, a `{business_id}` path value that doesn't match the token's `business_id` claim is rejected.
 5. **Untrusted Uploads:** File types are validated from raw bytes, never from headers or extensions; see [Upload Validation](#-upload-validation).
 6. **Chat History Retention:** Stored chat turns are scoped to the tenant and deleted after 7 days.
 
