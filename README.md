@@ -449,7 +449,12 @@ Validation rules:
    )
    ```
    `business_id` (and `doc_id`, used for deletion and re-indexing) are created as keyword payload indexes on the collection, so the pre-filter is an index lookup rather than a scan.
-3. **JWT Authentication:** Tokens are signed and verified in one place, `core/tokens.py` (`JWTCodec.encode` / `JWTCodec.decode`, HS256 with `JWT_SECRET` of at least 32 characters, lifetime `JWT_EXPIRES_IN` seconds). `api/middleware/auth.py` reads `Authorization: Bearer <token>`, verifies it with the codec, and requires the `sub`, `business_id`, and `exp` claims. The decoded claims are attached to the request as `request.state.token_payload` (routes read them via the `get_token_payload` dependency). Missing, malformed, expired, or wrongly signed tokens get `401`. Only `/health`, `/docs`, `/redoc`, `/openapi.json`, `POST /v1/auth/register`, and `POST /v1/auth/login` are public.
+3. **JWT Authentication:** Tokens are signed and verified in one place, `core/tokens.py` (`JWTCodec.encode` / `JWTCodec.decode`, HS256 with `JWT_SECRET` of at least 32 characters, lifetime `JWT_EXPIRES_IN` seconds). `api/middleware/auth.py` reads `Authorization: Bearer <token>`, verifies it with the codec, and requires the `sub`, `business_id`, and `exp` claims. The decoded claims are attached to the request as `request.state.token_payload` (routes read them via the `get_token_payload` dependency). **Every route is protected by default** via the app-wide `require_auth` dependency; missing, malformed, expired, or wrongly signed tokens get `401`. To make a route public, decorate its endpoint/handler with `@public` (from `api.middleware.auth`):
+   ```python
+   @public
+   async def login(): ...
+   ```
+   Currently public: `GET /health`, `POST /v1/auth/register`, `POST /v1/auth/login`, plus FastAPI's docs (`/docs`, `/redoc`, `/openapi.json`).
 4. **Business Comes from the Token:** `business_id` is always taken from the verified token, never from request bodies. On the WebSocket route, a `{business_id}` path value that doesn't match the token's `business_id` claim is rejected.
 5. **Untrusted Uploads:** File types are validated from raw bytes, never from headers or extensions; see [Upload Validation](#-upload-validation).
 6. **Chat History Retention:** Stored chat turns are scoped to the tenant and deleted after 7 days.

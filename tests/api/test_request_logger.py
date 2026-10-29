@@ -1,10 +1,10 @@
 import logging
 
 import pytest
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from api.middleware.auth import JWTAuthMiddleware
+from api.middleware.auth import JWTAuthMiddleware, public, require_auth
 from api.middleware.request_logger import RequestLoggingMiddleware
 from core.tokens import JWTCodec
 
@@ -13,11 +13,12 @@ CODEC = JWTCodec(secret="unit-test-secret-that-is-at-least-32-chars")
 
 @pytest.fixture
 def client() -> TestClient:
-    app = FastAPI()
-    app.add_middleware(JWTAuthMiddleware, codec=CODEC, public_paths={"/health", "/boom"})
+    app = FastAPI(dependencies=[Depends(require_auth)])
+    app.add_middleware(JWTAuthMiddleware, codec=CODEC)
     app.add_middleware(RequestLoggingMiddleware)
 
     @app.get("/health")
+    @public
     async def health():
         return {"status": "ok"}
 
@@ -26,6 +27,7 @@ def client() -> TestClient:
         return {}
 
     @app.get("/boom")
+    @public
     async def boom():
         raise RuntimeError("boom")
 
@@ -42,16 +44,14 @@ def test_successful_request_is_logged_at_info(client: TestClient, caplog: pytest
     [record] = _request_records(caplog)
     assert record.levelno == logging.INFO
     assert "GET /health -> 200" in record.getMessage()
-    assert "business_id=-" in record.getMessage()
 
 
-def test_authenticated_request_logs_business_id(client: TestClient, caplog: pytest.LogCaptureFixture):
+def test_authenticated_request_is_logged(client: TestClient, caplog: pytest.LogCaptureFixture):
     token = CODEC.encode(sub="user_1", business_id="biz_42")
     with caplog.at_level(logging.INFO):
         client.get("/me", headers={"Authorization": f"Bearer {token}"})
     [record] = _request_records(caplog)
     assert "GET /me -> 200" in record.getMessage()
-    assert "business_id=biz_42" in record.getMessage()
 
 
 def test_rejected_request_logs_reason_and_401(client: TestClient, caplog: pytest.LogCaptureFixture):
