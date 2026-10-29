@@ -127,9 +127,7 @@ rag-vector-engine/
 ├── api/                        # Synchronous FastAPI service
 │   ├── main.py                 # App entrypoint & lifecycle
 │   ├── routes/
-│   │   ├── tenants.py          # Onboarding, tenant profile, key rotation
-│   │   ├── documents.py        # Upload, list/status, delete, re-index
-│   │   └── chat_ws.py          # Authenticated WebSocket chat handler
+│   │   └── routes.py           # All routes: onboarding, documents, WebSocket chat (split later if needed)
 │   ├── validators/
 │   │   └── file_type.py        # Byte-level MIME sniffing & allowlist
 │   └── middleware/
@@ -158,6 +156,8 @@ rag-vector-engine/
 │   └── publisher.py            # RabbitMQ document status publisher
 │
 ├── tests/                      # pytest suite
+│   ├── api/
+│   │   └── test_main.py        # FastAPI app smoke test
 │   └── storage/
 │       └── test_blob.py        # Blob adapter tests (integration tests run against MinIO)
 │
