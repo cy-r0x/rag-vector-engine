@@ -45,12 +45,11 @@ class RequestLoggingMiddleware:
         level = logging.ERROR if status_code >= 500 else logging.WARNING if status_code >= 400 else logging.INFO
         logger.log(
             level,
-            "%s %s -> %d (%.1f ms) client=%s business_id=%s",
+            "%s %s -> %d (%.1f ms) client=%s",
             scope["method"],
             scope["path"],
             status_code,
             duration_ms,
             client[0] if client else "-",
-            payload.get("business_id", "-"),
             exc_info=exc_info,
         )
