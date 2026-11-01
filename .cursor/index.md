@@ -39,7 +39,8 @@ Status: **done** = implemented and tested, **stub** = empty file reserved by the
 | `workers/extractor.py` | `extract_markdown(data, mime)`: PDF (pypdf), DOCX (python-docx), XLSX (openpyxl), CSV, TXT → Markdown; `ExtractionError` / `NeedsOcrError` | done |
 | `workers/publisher.py` | `publish_status()`: confirmed, persistent `DocumentStatusEvent` to `DOCUMENT_EVENTS_QUEUE` | done |
 | `workers/chunker.py` | `chunk_markdown(markdown, size, overlap)`: simple paragraph packer (`CHUNK_SIZE` / `CHUNK_OVERLAP`), `to_jsonl()`; not header/table-aware yet | done |
-| `workers/{ocr,embedder}.py` | Ingestion pipeline steps | stub |
+| `workers/{ocr,embedder}.py` | Ingestion pipeline steps (embedder will call `infra.embeddings`) | stub |
+| `infra/embeddings/` | Provider pattern: `Embedder` protocol (`base.py`), `GeminiEmbedder` (`gemini.py`: `gemini-embedding-001`, retrieval task types, `EMBEDDING_DIMENSIONS`, batches ≤100, SDK retries, L2-normalized), `PROVIDERS` registry + `create_embedder()` / `get_embedder()` (`factory.py`, selected by `EMBEDDING_PROVIDER`) | done |
 | `tests/` | Mirrors the source tree; MinIO/Postgres/RabbitMQ tests skip if the service is down (Postgres tests use the `rve_test` DB via the `migrated_db`/`client` fixtures in `tests/api/conftest.py`; `blob_storage` fixture swaps in an in-memory store) | done |
 
 ## Conventions
@@ -50,6 +51,7 @@ Status: **done** = implemented and tested, **stub** = empty file reserved by the
 - Every route requires a JWT unless its endpoint is decorated with `@public` (`from common.decorators import public`).
 - Shared code is imported from package roots: `common.config`, `common.logger`, `common.auth`, `common.decorators`, `infra.queue`.
 - Settings come only from `common.config.get_settings()`; document new variables in `.env.example`.
+- Embeddings: depend on `infra.embeddings.Embedder` / `get_embedder()`, never on a provider SDK. New provider = module implementing `Embedder` + one entry in `PROVIDERS`.
 - Queues must be declared via `infra.queue.declare_queue` so publisher and consumer use identical arguments.
 - Schema changes go through Alembic: edit `db/models/schema.py`, then `alembic revision --autogenerate -m "..."`.
 - `business_id` in handlers comes from the token (`get_token_payload`), never from the request body.

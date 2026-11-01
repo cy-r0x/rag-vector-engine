@@ -36,7 +36,7 @@ flowchart TD
         Router{"File type?"}
         Extractor["Direct Extraction<br/>(PDF text layer, DOCX, XLSX, CSV)"]
         OCR["LightOn OCR<br/>(Images & Scanned PDFs)"]
-        Chunker["Markdown Chunker + Embedder<br/>(OpenAI or Gemini, TBD)"]
+        Chunker["Markdown Chunker + Embedder<br/>(Gemini; pluggable provider)"]
         StatusQueue[["RabbitMQ: document.events"]]
     end
 
@@ -82,7 +82,7 @@ flowchart TD
 * **Byte-Level File Validation:** Uploaded files are untrusted. The client-supplied `Content-Type` header and file extension are ignored; the real MIME type is detected from the file's magic bytes and checked against an allowlist before anything is stored or queued (see [Upload Validation](#-upload-validation)).
 * **Direct Extraction First, OCR Only When Needed:** Text-based files are parsed natively into Markdown (PDF text layer, DOCX headings/tables, XLSX/CSV sheets as Markdown tables), which is faster and more accurate than OCR and needs no GPU. Only images (`.png`, `.jpg`, `.tiff`) and scanned PDFs without a text layer are routed to **LightOn OCR**, which transcribes multi-column layouts, tables, and forms into structured Markdown.
 * **Semantic & Markdown-Aware Chunking:** Chunks along `#`, `##`, and `###` headers while keeping tables intact. Metadata paths are prepended to every chunk vector.
-* **Pluggable Embeddings:** The embedding provider is not fixed yet; OpenAI or Gemini are the likely candidates. `workers/embedder.py` is the single place the choice is made, and the same model must be used for indexing and for query embedding.
+* **Pluggable Embeddings:** Embeddings come from Gemini (`gemini-embedding-001`, 768 dimensions by default) behind a provider interface in `infra/embeddings/`. Callers depend only on the `Embedder` protocol (`embed_documents`, `embed_query`); `EMBEDDING_PROVIDER` picks the implementation from a registry, so switching providers means adding one module and one registry entry. The same provider, model, and dimensions must be used for indexing and for query embedding.
 * **Reliable Async Processing:** Ingestion jobs flow through a RabbitMQ work queue with retries and a Dead-Letter Queue (DLQ). Document status changes (`PROCESSING`, `INDEXED`, `FAILED`) are published to a RabbitMQ `document.events` queue and consumed by the API to update PostgreSQL.
 * **Status by Polling:** The dashboard polls `GET /v1/documents` to show live document status; there is no push channel for status updates.
 * **Deletion & Re-indexing:** Tenants can delete a document (raw file, vectors, and metadata) or re-index it from the stored source file, e.g. after changing the chunker or embedding model.
@@ -132,6 +132,10 @@ rag-vector-engine/
 │       └── events.py           # RabbitMQ payloads (IngestionJob, DocumentStatusEvent)
 │
 ├── infra/                      # External service clients
+│   ├── embeddings/
+│   │   ├── base.py             # Embedder protocol (provider interface) + errors
+│   │   ├── gemini.py           # Gemini provider (google-genai): batched, retried, L2-normalized
+│   │   └── factory.py          # Provider registry; EMBEDDING_PROVIDER selects the implementation
 │   ├── queue/
 │   │   ├── queue.py            # RabbitMQ connect / channel / standard queue declaration
 │   │   └── publisher.py        # Ingestion job publisher used by the upload route
@@ -146,7 +150,7 @@ rag-vector-engine/
 │   ├── extractor.py            # Routing by detected MIME + direct extraction to Markdown
 │   ├── ocr.py                  # LightOn OCR for images & scanned PDFs
 │   ├── chunker.py              # Simple paragraph-packing chunker (Markdown-aware splitting later)
-│   ├── embedder.py             # Batched text embedding
+│   ├── embedder.py             # Pipeline step: embeds chunks via infra.embeddings (not wired in yet)
 │   └── publisher.py            # RabbitMQ document status publisher
 │
 ├── tests/                      # pytest suite

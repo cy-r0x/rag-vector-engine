@@ -36,7 +36,15 @@ class Settings(BaseSettings):
     chunk_size: int = 1000
     chunk_overlap: int = 150
 
-    @field_validator("s3_endpoint_url", "s3_access_key_id", "s3_secret_access_key", mode="before")
+    embedding_provider: str = "gemini"
+    embedding_model: str | None = None
+    embedding_dimensions: int = 768
+    embedding_batch_size: int = 100
+    gemini_api_key: str | None = None
+
+    @field_validator(
+        "s3_endpoint_url", "s3_access_key_id", "s3_secret_access_key", "embedding_model", "gemini_api_key", mode="before"
+    )
     @classmethod
     def _empty_to_none(cls, value: str | None) -> str | None:
         return value or None
