@@ -274,6 +274,7 @@ def test_list_returns_own_documents_newest_first(
     ]
     newest = documents[0]
     assert newest["status"] == "QUEUED"
+    assert newest["status_detail"] is None
     assert newest["detected_mime"] == "text/csv"
     assert newest["size_bytes"] == len(CSV_BYTES)
     assert newest["created_at"] and newest["updated_at"]

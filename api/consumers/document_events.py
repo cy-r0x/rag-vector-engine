@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from common.config import get_settings
 from db import get_sessionmaker
-from db.models import Document, DocumentStatusEvent
+from db.models import Document, DocumentStatus, DocumentStatusEvent
 from infra.queue import connect, declare_queue, open_channel
 
 logger = logging.getLogger("api.document_events")
@@ -18,12 +18,17 @@ _RETRY_SECONDS = 5
 
 
 async def apply_status_event(session: AsyncSession, event: DocumentStatusEvent) -> bool:
-    """Set the document's status; returns False if no document matches the event's doc_id and business_id."""
-    result = await session.execute(
-        update(Document)
-        .where(Document.id == event.doc_id, Document.business_id == event.business_id)
-        .values(status=event.status)
-    )
+    """Set the document's status and status detail (the failure reason, cleared by any other status).
+
+    Returns False if no document matches the event's doc_id and business_id.
+
+    Events can be applied out of order (messages are handled concurrently), so PROCESSING only moves a document
+    out of QUEUED and never overwrites a final INDEXED/FAILED.
+    """
+    statement = update(Document).where(Document.id == event.doc_id, Document.business_id == event.business_id)
+    if event.status is DocumentStatus.PROCESSING:
+        statement = statement.where(Document.status == DocumentStatus.QUEUED)
+    result = await session.execute(statement.values(status=event.status, status_detail=event.detail))
     await session.commit()
     return result.rowcount > 0
 
@@ -47,9 +52,14 @@ async def handle_event(message: AbstractIncomingMessage, *, sessionmaker: async_
 
     await message.ack()
     if applied:
-        logger.info("Document %s -> %s", event.doc_id, event.status)
+        logger.info("Document %s -> %s%s", event.doc_id, event.status, f" ({event.detail})" if event.detail else "")
     else:
-        logger.warning("Ignored status event for unknown document %s (business %s)", event.doc_id, event.business_id)
+        logger.warning(
+            "Ignored %s event for document %s (business %s): unknown document or stale event",
+            event.status,
+            event.doc_id,
+            event.business_id,
+        )
 
 
 async def consume_document_events(

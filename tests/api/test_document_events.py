@@ -39,13 +39,50 @@ def _status_of(doc_id: uuid.UUID) -> DocumentStatus:
     return run_db(lambda session: session.scalar(select(Document.status).where(Document.id == doc_id)))
 
 
-def _event(doc: Document, *, business_id: uuid.UUID | None = None) -> DocumentStatusEvent:
+def _detail_of(doc_id: uuid.UUID) -> str | None:
+    return run_db(lambda session: session.scalar(select(Document.status_detail).where(Document.id == doc_id)))
+
+
+def _event(
+    doc: Document,
+    *,
+    business_id: uuid.UUID | None = None,
+    status: DocumentStatus = DocumentStatus.INDEXED,
+    detail: str | None = None,
+) -> DocumentStatusEvent:
     return DocumentStatusEvent(
         doc_id=doc.id,
         business_id=business_id or doc.business_id,
-        status=DocumentStatus.INDEXED,
+        status=status,
         occurred_at=datetime.now(UTC),
+        detail=detail,
     )
+
+
+def test_failed_event_stores_the_reason_and_a_later_success_clears_it(migrated_db: None):
+    doc = _create_document()
+    reason = "The PDF has no text layer (scanned?); OCR is not available yet"
+
+    run_db(lambda session: apply_status_event(session, _event(doc, status=DocumentStatus.FAILED, detail=reason)))
+    assert (_status_of(doc.id), _detail_of(doc.id)) == (DocumentStatus.FAILED, reason)
+
+    run_db(lambda session: apply_status_event(session, _event(doc, status=DocumentStatus.INDEXED)))
+    assert (_status_of(doc.id), _detail_of(doc.id)) == (DocumentStatus.INDEXED, None)
+
+
+def test_processing_moves_a_queued_document(migrated_db: None):
+    doc = _create_document()
+    assert run_db(lambda session: apply_status_event(session, _event(doc, status=DocumentStatus.PROCESSING)))
+    assert _status_of(doc.id) is DocumentStatus.PROCESSING
+
+
+@pytest.mark.parametrize("final", [DocumentStatus.INDEXED, DocumentStatus.FAILED])
+def test_late_processing_event_does_not_overwrite_a_final_status(migrated_db: None, final: DocumentStatus):
+    doc = _create_document()
+    run_db(lambda session: apply_status_event(session, _event(doc, status=final)))
+
+    assert run_db(lambda session: apply_status_event(session, _event(doc, status=DocumentStatus.PROCESSING))) is False
+    assert _status_of(doc.id) is final
 
 
 def test_apply_sets_status(migrated_db: None):

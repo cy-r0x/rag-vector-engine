@@ -81,6 +81,7 @@ class DocumentSummary(BaseModel):
     doc_id: UUID
     filename: str
     status: DocumentStatus
+    status_detail: str | None
     detected_mime: str
     size_bytes: int
     created_at: datetime
@@ -105,6 +106,7 @@ async def list_documents(
                 doc_id=doc.id,
                 filename=doc.filename,
                 status=doc.status,
+                status_detail=doc.status_detail,
                 detected_mime=doc.detected_mime,
                 size_bytes=doc.size_bytes,
                 created_at=doc.created_at,

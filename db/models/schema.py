@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID, uuid7
 
-from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, MetaData, String, Uuid, func
+from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, MetaData, String, Text, Uuid, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 _NAMING_CONVENTION = {
@@ -61,6 +61,7 @@ class Document(Base):
         Enum(DocumentStatus, name="document_status", native_enum=False, create_constraint=True, length=16),
         default=DocumentStatus.QUEUED,
     )
+    status_detail: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

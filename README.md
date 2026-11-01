@@ -167,7 +167,9 @@ rag-vector-engine/
 │   │   └── storage/
 │   │       └── test_blob.py    # Blob adapter tests (integration tests run against MinIO)
 │   └── workers/
-│       └── test_consumer.py    # Consumer integration test (runs against RabbitMQ)
+│       ├── sample_documents.py # Builds real PDF/DOCX/XLSX test files
+│       ├── test_extractor.py   # Extraction to Markdown per file type
+│       └── test_consumer.py    # Worker integration tests (run against RabbitMQ)
 │
 ├── docker-compose.yml          # Local infra (currently MinIO + bucket init, Postgres, RabbitMQ)
 ├── alembic.ini                 # Alembic configuration
@@ -298,7 +300,19 @@ Upload up to **50 files per request** (`MAX_UPLOAD_FILES`) as repeated multipart
 
 The message's `message_id` is the `doc_id` and its `type` is `ingestion.job`. Retries and a dead-letter queue are not set up yet.
 
-The worker (`python -m workers.consumer`) reports each job's outcome as a status event on `DOCUMENT_EVENTS_QUEUE` (`document.events`), and acks the job only after RabbitMQ has confirmed that event. The API consumes the queue in the background (disable with `CONSUME_DOCUMENT_EVENTS=false`) and updates the document row, matching both `doc_id` and `business_id`. Until the extraction pipeline exists, every job is reported as `INDEXED`:
+The worker (`python -m workers.consumer`) reports each job's outcome as a status event on `DOCUMENT_EVENTS_QUEUE` (`document.events`), and acks the job only after RabbitMQ has confirmed that event. The API consumes the queue in the background (disable with `CONSUME_DOCUMENT_EVENTS=false`) and updates the document row (`status`, and `status_detail` from the event's `detail`), matching both `doc_id` and `business_id`; a late `PROCESSING` event never overwrites a final status.
+
+For each job the worker reports `PROCESSING`, downloads the source file, extracts it to Markdown (`workers/extractor.py`, routed by `detected_mime`) and stores the result next to the source as `{business_id}/{doc_id}/extracted.md`:
+
+| Type | Markdown produced |
+|------|-------------------|
+| PDF | Text layer via `pypdf`, one `## Page N` section per page with text |
+| DOCX | `python-docx`: Title/Heading N → `#` headings, bullet/numbered lists, tables → Markdown tables |
+| XLSX | `openpyxl` (cached values): one `## Sheet: <name>` table per non-empty sheet |
+| CSV | One Markdown table (delimiter sniffed) |
+| TXT | The text as is |
+
+It then reports `INDEXED` (a placeholder until chunking and embedding exist). Documents that can't be extracted are reported as `FAILED` with a `detail`: PDFs without a text layer (scanned; OCR is not available yet), password-protected or damaged files, files with no text, or a missing source file. Storage or RabbitMQ errors requeue the job instead:
 
 ```json
 {
@@ -382,6 +396,7 @@ curl http://localhost:8000/v1/documents \
       "doc_id": "0192f6a5-1c2d-7e3f-a4b5-c6d7e8f90a1b",
       "filename": "quarterly_report.pdf",
       "status": "INDEXED",
+      "status_detail": null,
       "detected_mime": "application/pdf",
       "size_bytes": 482113,
       "created_at": "2026-10-29T11:40:51Z",
@@ -391,7 +406,7 @@ curl http://localhost:8000/v1/documents \
 }
 ```
 
-Documents are scoped to the token's `business_id` and returned newest first.
+Documents are scoped to the token's `business_id` and returned newest first. `status_detail` is the failure reason when `status` is `FAILED` (for example `"The PDF has no text layer (scanned?); OCR is not available yet"`), otherwise `null`.
 
 A single document can be fetched with `GET /v1/documents/{doc_id}`.
 

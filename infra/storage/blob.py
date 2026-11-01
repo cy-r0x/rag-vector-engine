@@ -56,13 +56,23 @@ class BlobStorage(Protocol):
 
 def object_key(business_id: str, doc_id: str, ext: str) -> str:
     """Build `{business_id}/{doc_id}/source.{ext}`; rejects anything that could escape the tenant prefix."""
+    if not _EXT_PATTERN.fullmatch(ext):
+        raise ValueError(f"Invalid extension: {ext!r}")
+    return f"{document_prefix(business_id, doc_id)}source.{ext}"
+
+
+def extracted_markdown_key(business_id: str, doc_id: str) -> str:
+    """Build `{business_id}/{doc_id}/extracted.md`, where the worker stores a document's extracted Markdown."""
+    return f"{document_prefix(business_id, doc_id)}extracted.md"
+
+
+def document_prefix(business_id: str, doc_id: str) -> str:
+    """Build `{business_id}/{doc_id}/`, the prefix holding every object of one document."""
     if not _ID_PATTERN.fullmatch(business_id):
         raise ValueError(f"Invalid business_id: {business_id!r}")
     if not _ID_PATTERN.fullmatch(doc_id):
         raise ValueError(f"Invalid doc_id: {doc_id!r}")
-    if not _EXT_PATTERN.fullmatch(ext):
-        raise ValueError(f"Invalid extension: {ext!r}")
-    return f"{business_id}/{doc_id}/source.{ext}"
+    return f"{business_id}/{doc_id}/"
 
 
 def _error_code(exc: ClientError) -> str:

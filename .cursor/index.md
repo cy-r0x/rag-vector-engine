@@ -15,7 +15,7 @@ Status: **done** = implemented and tested, **stub** = empty file reserved by the
 | Path | What it is | Status |
 |------|------------|--------|
 | `api/main.py` | FastAPI app: logging setup, JWT middleware, app-wide `require_auth`, router, `GET /health`; lifespan runs the document events consumer (`CONSUME_DOCUMENT_EVENTS`) | done |
-| `api/consumers/document_events.py` | Consumes `DOCUMENT_EVENTS_QUEUE`; `apply_status_event` updates the row matching `doc_id` + `business_id`; retries the first connection so the API starts without RabbitMQ | done |
+| `api/consumers/document_events.py` | Consumes `DOCUMENT_EVENTS_QUEUE`; `apply_status_event` updates `status` + `status_detail` (failure reason) on the row matching `doc_id` + `business_id`; retries the first connection so the API starts without RabbitMQ | done |
 | `api/routes/routes.py` | Single router (`/v1`); maps paths to handlers via `add_api_route` | done |
 | `api/handlers/auth.py` | `register` (creates business + owner user, returns JWT; 409 on duplicate email) / `login` (401 on bad credentials) | done |
 | `api/handlers/documents.py` | `GET /v1/documents`: the caller's documents, newest first. `POST /v1/documents/upload` (publishes one `IngestionJob` per document after the batch is stored; 503 + batch discarded if RabbitMQ doesn't confirm): ≤50 files (`files` field), PDF/DOCX/XLSX/CSV/TXT, all-or-nothing; stores in blob storage + `documents` row (`QUEUED`). No queue publish yet | done |
@@ -28,16 +28,17 @@ Status: **done** = implemented and tested, **stub** = empty file reserved by the
 | `common/auth/` | `JWTCodec` (HS256 encode/decode), `get_jwt_codec()`; `PasswordHasher` (Argon2id), `get_password_hasher()` | done |
 | `common/decorators/` | `@public`, `is_public()` | done |
 | `db/postgres.py` | Async engine, `get_session` (FastAPI dependency), `dispose_engine` (app shutdown) | done |
-| `db/models/schema.py` | `Base`, `Business`, `User` (unique lowercased email, role), `Document` (`DocumentStatus`); all primary keys are native UUIDv7 | done |
+| `db/models/schema.py` | `Base`, `Business`, `User` (unique lowercased email, role), `Document` (`DocumentStatus`, nullable `status_detail` failure reason); all primary keys are native UUIDv7 | done |
 | `db/models/events.py` | `IngestionJob` (JSON payload published per uploaded document; `from_document()`), `DocumentStatusEvent` (worker → API status update) | done |
 | `db/migrations/`, `alembic.ini` | Alembic (async); `env.py` uses `DATABASE_URL` unless `sqlalchemy.url` is set | done |
 | `infra/queue/` | RabbitMQ `connect` / `open_channel` / `declare_queue`; `JobPublisher` / `RabbitJobPublisher` (confirmed, mandatory, persistent publishes; plain connection opened on demand), `get_job_publisher()` (FastAPI dependency, closed on shutdown) | done |
 | `infra/redis/` | Redis client | stub |
-| `infra/storage/blob.py` | `BlobStorage` + `S3BlobStorage` (MinIO now, AWS S3 via env), `object_key()` | done |
+| `infra/storage/blob.py` | `BlobStorage` + `S3BlobStorage` (MinIO now, AWS S3 via env), `object_key()` (source), `extracted_markdown_key()`, `document_prefix()` | done |
 | `infra/storage/vector_db.py` | Qdrant client with `business_id` pre-filter | stub |
-| `workers/consumer.py` | Consumes `INGESTION_QUEUE`; malformed jobs rejected, otherwise publishes `INDEXED` (placeholder) then acks; requeues if the event can't be published (no DLQ yet) | done |
+| `workers/consumer.py` | Consumes `INGESTION_QUEUE`: reports `PROCESSING`, fetches the source, extracts, stores `extracted.md`, reports `INDEXED` (placeholder) or `FAILED` + detail; malformed jobs rejected; infra errors requeue (no DLQ yet) | done |
+| `workers/extractor.py` | `extract_markdown(data, mime)`: PDF (pypdf), DOCX (python-docx), XLSX (openpyxl), CSV, TXT → Markdown; `ExtractionError` / `NeedsOcrError` | done |
 | `workers/publisher.py` | `publish_status()`: confirmed, persistent `DocumentStatusEvent` to `DOCUMENT_EVENTS_QUEUE` | done |
-| `workers/{extractor,ocr,chunker,embedder}.py` | Ingestion pipeline steps | stub |
+| `workers/{ocr,chunker,embedder}.py` | Ingestion pipeline steps | stub |
 | `tests/` | Mirrors the source tree; MinIO/Postgres/RabbitMQ tests skip if the service is down (Postgres tests use the `rve_test` DB via the `migrated_db`/`client` fixtures in `tests/api/conftest.py`; `blob_storage` fixture swaps in an in-memory store) | done |
 
 ## Conventions
