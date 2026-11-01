@@ -13,7 +13,10 @@ from common.config import get_settings
 from common.decorators import public
 from common.logger import setup_logging
 from db import dispose_engine
+from infra.embeddings import get_embedder
+from infra.llm import get_chat_model
 from infra.queue import close_job_publisher
+from infra.storage.vector_db import get_vector_store
 
 setup_logging(get_settings().log_level)
 
@@ -29,6 +32,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     if events_consumer is not None:
         await events_consumer
     await close_job_publisher()
+    for cached in (get_embedder, get_vector_store, get_chat_model):
+        if cached.cache_info().currsize:
+            await cached().close()
     await dispose_engine()
 
 

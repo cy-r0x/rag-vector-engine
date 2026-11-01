@@ -63,8 +63,16 @@ class VectorStore(Protocol):
     async def delete_document(self, *, business_id: UUID, doc_id: UUID) -> None: ...
 
     async def search(
-        self, *, business_id: UUID, vector: Sequence[float], limit: int = 5, doc_ids: Sequence[UUID] | None = None
-    ) -> list[ChunkHit]: ...
+        self,
+        *,
+        business_id: UUID,
+        vector: Sequence[float],
+        limit: int = 5,
+        min_score: float | None = None,
+        doc_ids: Sequence[UUID] | None = None,
+    ) -> list[ChunkHit]:
+        """The tenant's most similar chunks, best first; with `min_score`, only chunks scoring at least that."""
+        ...
 
     async def close(self) -> None: ...
 
@@ -149,13 +157,20 @@ class QdrantVectorStore:
         )
 
     async def search(
-        self, *, business_id: UUID, vector: Sequence[float], limit: int = 5, doc_ids: Sequence[UUID] | None = None
+        self,
+        *,
+        business_id: UUID,
+        vector: Sequence[float],
+        limit: int = 5,
+        min_score: float | None = None,
+        doc_ids: Sequence[UUID] | None = None,
     ) -> list[ChunkHit]:
         response = await self._client.query_points(
             self._collection,
             query=list(vector),
             query_filter=_tenant_filter(business_id, doc_ids),
             limit=limit,
+            score_threshold=min_score,
             with_payload=True,
         )
         return [

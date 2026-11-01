@@ -76,6 +76,17 @@ async def test_search_ranks_by_similarity_and_returns_chunk_payload(store: Qdran
     assert (hits[0].text, hits[0].start, hits[0].end) == ("about revenue", chunks[0].start, chunks[0].end)
 
 
+async def test_search_drops_chunks_below_the_minimum_score(store: QdrantVectorStore):
+    business, doc = uuid.uuid7(), uuid.uuid7()
+    await store.replace_document_chunks(
+        business_id=business, doc_id=doc, chunks=_chunks("close", "far"), vectors=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    )
+
+    hits = await store.search(business_id=business, vector=[1.0, 0.0, 0.0], limit=5, min_score=0.65)
+
+    assert [hit.text for hit in hits] == ["close"]
+
+
 async def test_search_can_be_narrowed_to_documents(store: QdrantVectorStore):
     business, doc_a, doc_b = uuid.uuid7(), uuid.uuid7(), uuid.uuid7()
     await store.replace_document_chunks(business_id=business, doc_id=doc_a, chunks=_chunks("a"), vectors=[[1, 0, 0]])

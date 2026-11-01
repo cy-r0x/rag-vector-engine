@@ -42,6 +42,15 @@ class Settings(BaseSettings):
     embedding_batch_size: int = 100
     gemini_api_key: str | None = None
 
+    llm_provider: str = "gemini"
+    llm_model: str | None = None
+    llm_temperature: float = 0.2
+
+    retrieval_top_k: int = 5
+    retrieval_min_score: float = 0.65
+    chat_max_query_chars: int = 2000
+    chat_ticket_expires_in: int = 60
+
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str | None = None
     qdrant_collection: str = "document_chunks"
@@ -51,6 +60,7 @@ class Settings(BaseSettings):
         "s3_access_key_id",
         "s3_secret_access_key",
         "embedding_model",
+        "llm_model",
         "gemini_api_key",
         "qdrant_api_key",
         mode="before",

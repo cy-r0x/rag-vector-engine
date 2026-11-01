@@ -19,7 +19,10 @@ Status: **done** = implemented and tested, **stub** = empty file reserved by the
 | `api/routes/routes.py` | Single router (`/v1`); maps paths to handlers via `add_api_route` | done |
 | `api/handlers/auth.py` | `register` (creates business + owner user, returns JWT; 409 on duplicate email) / `login` (401 on bad credentials) | done |
 | `api/handlers/documents.py` | `GET /v1/documents`: the caller's documents, newest first. `GET /v1/documents/{doc_id}` and `GET /v1/documents/{doc_id}/markdown` (extracted Markdown, 409 unless INDEXED; 404 for other tenants). `POST /v1/documents/upload` (publishes one `IngestionJob` per document after the batch is stored; 503 + batch discarded if RabbitMQ doesn't confirm): ≤50 files (`files` field), PDF/DOCX/XLSX/CSV/TXT, all-or-nothing; stores in blob storage + `documents` row (`QUEUED`). No queue publish yet | done |
-| `api/middleware/auth.py` | `JWTAuthMiddleware` (decodes Bearer token → `request.state.token_payload`), `require_auth`, `get_token_payload`, `get_business_id` (claim → `UUID`, 401 if malformed) | done |
+| `api/middleware/auth.py` | `JWTAuthMiddleware` (decodes Bearer token → `request.state.token_payload`; tokens with a `token_use` claim are rejected), `require_auth` (on `HTTPConnection`), `get_token_payload`, `get_business_id` (claim → `UUID`, 401 if malformed) | done |
+| `api/handlers/chat.py` | `POST /v1/chat/ticket` (60 s chat-only ticket) and WebSocket `/v1/chat/ws/{business_id}` (token query param; path must match token's business: 4401/4403; frames `delta` / `done` + sources / `error`) | done |
+| `api/rag.py` | `retrieve()` (embed query, business-filtered search with `RETRIEVAL_TOP_K` / `RETRIEVAL_MIN_SCORE`, filenames from DB), grounded `SYSTEM_PROMPT` + `build_prompt()`, `answer()` | done |
+| `infra/llm/` | Chat model provider pattern (same as embeddings): `ChatModel` protocol, `GeminiChatModel` (default `gemini-3.5-flash-lite`, `LLM_MODEL`), `PROVIDERS` + `create_chat_model()` / `get_chat_model()` | done |
 | `api/middleware/request_logger.py` | One log line per request (method, path, status, duration) | done |
 | `api/middleware/rate_limit.py` | Redis token bucket | stub |
 | `api/validators/file_type.py` | `detect_file_type`: magic-byte upload validation (`filetype` + own ZIP/CSV/TXT checks); `allowed=` narrows the allowlist per route | done |

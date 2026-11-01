@@ -41,7 +41,7 @@ class InMemoryVectorStore:
     async def delete_document(self, *, business_id, doc_id) -> None:
         self.documents.pop((business_id, doc_id), None)
 
-    async def search(self, *, business_id, vector, limit=5, doc_ids=None):
+    async def search(self, *, business_id, vector, limit=5, min_score=None, doc_ids=None):
         return []
 
     async def close(self) -> None:

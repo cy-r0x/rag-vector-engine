@@ -1,7 +1,7 @@
 from fastapi import APIRouter, status
 from fastapi.responses import Response
 
-from api.handlers import auth, documents
+from api.handlers import auth, chat, documents
 
 router = APIRouter(prefix="/v1")
 
@@ -35,3 +35,11 @@ router.add_api_route(
     response_class=Response,
     responses={200: {"content": {"text/markdown": {}}, "description": "The extracted Markdown"}},
 )
+
+router.add_api_route(
+    "/chat/ticket",
+    chat.create_chat_ticket,
+    methods=["POST"],
+    response_model=chat.ChatTicket,
+)
+router.add_api_websocket_route("/chat/ws/{business_id}", chat.chat_socket)

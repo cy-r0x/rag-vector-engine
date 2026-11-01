@@ -4,6 +4,7 @@ from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
 from starlette.datastructures import Headers
+from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from common.auth import JWTCodec, TokenError
@@ -12,6 +13,9 @@ from common.decorators import is_public
 logger = logging.getLogger("api.auth")
 
 _MISSING_TOKEN = "Missing or malformed Authorization header"
+
+# Claim marking a purpose-bound token (e.g. a chat WebSocket ticket) that must not be accepted as an access token.
+TOKEN_USE_CLAIM = "token_use"
 
 
 class JWTAuthMiddleware:
@@ -32,22 +36,30 @@ class JWTAuthMiddleware:
             token = _bearer_token(Headers(scope=scope).get("authorization"))
             if token is not None:
                 try:
-                    state["token_payload"] = self.codec.decode(token)
+                    payload = self.codec.decode(token)
                 except TokenError as exc:
                     state["auth_error"] = str(exc)
+                else:
+                    if TOKEN_USE_CLAIM in payload:
+                        state["auth_error"] = "Token is not valid for this API"
+                    else:
+                        state["token_payload"] = payload
         await self.app(scope, receive, send)
 
 
-def require_auth(request: Request) -> None:
-    """App-wide dependency: requires a valid token unless the matched endpoint is `@public`."""
-    route = request.scope.get("route")
+def require_auth(connection: HTTPConnection) -> None:
+    """App-wide dependency: requires a valid token unless the matched endpoint is `@public`.
+
+    WebSocket endpoints are `@public` and authenticate the connection themselves.
+    """
+    route = connection.scope.get("route")
     if is_public(getattr(route, "endpoint", None)):
         return
-    if getattr(request.state, "token_payload", None) is not None:
+    if getattr(connection.state, "token_payload", None) is not None:
         return
 
-    reason = getattr(request.state, "auth_error", None) or _MISSING_TOKEN
-    logger.warning("Rejected %s %s: %s", request.method, request.url.path, reason)
+    reason = getattr(connection.state, "auth_error", None) or _MISSING_TOKEN
+    logger.warning("Rejected %s %s: %s", connection.scope.get("method", "WS"), connection.url.path, reason)
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=reason,

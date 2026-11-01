@@ -104,7 +104,9 @@ rag-vector-engine/
 │   │   └── routes.py           # All routes: onboarding, documents, WebSocket chat (split later if needed)
 │   ├── handlers/               # Business logic called by routes (routes stay thin)
 │   │   ├── auth.py             # register / login
+│   │   ├── chat.py             # Chat ticket + per-business WebSocket (/v1/chat/ws/{business_id})
 │   │   └── documents.py        # Batch document upload (validate, store, record)
+│   ├── rag.py                  # Retrieval (business-filtered, top-k, min score) + grounded prompt
 │   ├── validators/
 │   │   └── file_type.py        # Byte-level MIME sniffing & allowlist
 │   └── middleware/
@@ -136,6 +138,10 @@ rag-vector-engine/
 │   │   ├── base.py             # Embedder protocol (provider interface) + errors
 │   │   ├── gemini.py           # Gemini provider (google-genai): batched, retried, L2-normalized
 │   │   └── factory.py          # Provider registry; EMBEDDING_PROVIDER selects the implementation
+│   ├── llm/
+│   │   ├── base.py             # ChatModel protocol (streaming) + errors
+│   │   ├── gemini.py           # Gemini chat provider (streamed generate_content)
+│   │   └── factory.py          # Provider registry; LLM_PROVIDER selects the implementation
 │   ├── queue/
 │   │   ├── queue.py            # RabbitMQ connect / channel / standard queue declaration
 │   │   └── publisher.py        # Ingestion job publisher used by the upload route
@@ -463,32 +469,57 @@ Deleting or re-indexing a document that is currently `QUEUED` or `PROCESSING` re
 ---
 
 ### 6. Query via Authenticated WebSocket
-Connect client applications to the real-time inference gateway. Browsers can't set headers on WebSocket connections, so the JWT is passed as the `token` query parameter and verified by the WebSocket route itself. The server closes the connection if the token's `business_id` claim doesn't match the `{business_id}` in the path.
+Each business chats over its own socket, `/v1/chat/ws/{business_id}`. Browsers can't set headers on WebSocket connections, so the JWT is passed as the `token` query parameter and verified by the WebSocket route itself. The `{business_id}` in the path selects whose documents are searched, but it is only trusted once it matches the token's `business_id` claim; otherwise the server closes the connection.
+
+Browser clients shouldn't hold the access token, so they first exchange it for a short-lived, chat-only **ticket** (`CHAT_TICKET_EXPIRES_IN`, default 60 s). A ticket only opens the socket (it is rejected as a Bearer token on every HTTP route), and the socket stays usable until the access token it was issued from would have expired:
+
+```bash
+curl -X POST http://localhost:8000/v1/chat/ticket -H "Authorization: Bearer $ACCESS_TOKEN"
+# {"ticket": "eyJ...", "business_id": "0192f6a4-...", "expires_in": 60, "ws_path": "/v1/chat/ws/0192f6a4-...", "token_type": "chat_ws"}
+```
 
 ```javascript
 const businessId = "0192f6a4-3b1e-7c2d-9a4f-5e8b1c2d3e4f";
-const accessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...";
+const ticket = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."; // or an access token
 
-const socket = new WebSocket(`ws://localhost:8000/v1/chat/ws/${businessId}?token=${accessToken}`);
+const socket = new WebSocket(`ws://localhost:8000/v1/chat/ws/${businessId}?token=${ticket}`);
 
 socket.onopen = () => {
-  // Submit customer question
   socket.send(JSON.stringify({
     query: "What were our total operating revenues for Q3?",
-    session_id: "client_session_442"
+    session_id: "client_session_442" // optional; echoed in every frame
   }));
 };
 
 socket.onmessage = (event) => {
   const data = JSON.parse(event.data);
-  
   if (data.type === "delta") {
-    process.stdout.write(data.content); // Streamed token
+    process.stdout.write(data.content); // streamed answer text
   } else if (data.type === "done") {
     console.log("\nSources:", data.sources);
+  } else if (data.type === "error") {
+    console.error(data.detail);
   }
 };
 ```
+
+For every question the server embeds the query (`embed_query`), searches Qdrant pre-filtered by the authenticated `business_id`, and keeps at most `RETRIEVAL_TOP_K` chunks (default 5) whose cosine similarity is at least `RETRIEVAL_MIN_SCORE` (default 0.65). Those excerpts go to the chat model (`infra/llm`, Gemini `gemini-3.5-flash-lite` by default via `LLM_MODEL`), which is instructed to answer only from them, cite them as `[1]`, `[2]`, and treat their content as data rather than instructions. If no chunk passes the threshold, the answer is "I couldn't find anything in your documents that answers this question." and the model isn't called. The `done` frame lists the sources:
+
+```json
+{"type": "done", "session_id": "client_session_442", "sources": [
+  {"number": 1, "doc_id": "0192f6a5-...", "filename": "strategy.pdf", "chunk_index": 0, "score": 0.7291, "excerpt": "## Page 1\n\nStrategy 2027: ..."}
+]}
+```
+
+| Situation | Result |
+|-----------|--------|
+| Missing, invalid, or expired token | Close code `4401` |
+| Token belongs to another business | Close code `4403` |
+| Login session (access token) has expired | `error` frame, then close code `4401` |
+| Malformed message (not JSON, empty or > `CHAT_MAX_QUERY_CHARS` query) | `error` frame; the socket stays open |
+| Embedding or answer generation fails | `error` frame; the socket stays open |
+
+Token values in URLs are redacted from the server logs.
 
 ---
 
@@ -559,7 +590,7 @@ Validation rules:
    @public
    async def login(): ...
    ```
-   Currently public: `GET /health`, `POST /v1/auth/register`, `POST /v1/auth/login`, plus FastAPI's docs (`/docs`, `/redoc`, `/openapi.json`).
+   Currently public: `GET /health`, `POST /v1/auth/register`, `POST /v1/auth/login`, plus FastAPI's docs (`/docs`, `/redoc`, `/openapi.json`). The chat WebSocket is `@public` at the HTTP layer and authenticates its `token` query parameter itself. Tokens carrying a `token_use` claim (chat tickets) are rejected by every HTTP route.
 4. **Business Comes from the Token:** `business_id` is always taken from the verified token, never from request bodies. On the WebSocket route, a `{business_id}` path value that doesn't match the token's `business_id` claim is rejected.
 5. **Untrusted Uploads:** File types are validated from raw bytes, never from headers or extensions; see [Upload Validation](#-upload-validation).
 6. **Chat History Retention:** Stored chat turns are scoped to the tenant and deleted after 7 days.
