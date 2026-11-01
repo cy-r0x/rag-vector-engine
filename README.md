@@ -98,6 +98,8 @@ flowchart TD
 rag-vector-engine/
 ├── api/                        # Synchronous FastAPI service
 │   ├── main.py                 # App entrypoint & lifecycle
+│   ├── consumers/
+│   │   └── document_events.py  # Background consumer: applies document.events status events to PostgreSQL
 │   ├── routes/
 │   │   └── routes.py           # All routes: onboarding, documents, WebSocket chat (split later if needed)
 │   ├── handlers/               # Business logic called by routes (routes stay thin)
@@ -127,7 +129,7 @@ rag-vector-engine/
 │   │   └── versions/           # Migration scripts
 │   └── models/
 │       ├── schema.py           # Relational schema (businesses, users, documents)
-│       └── events.py           # RabbitMQ payloads (IngestionJob; status events later)
+│       └── events.py           # RabbitMQ payloads (IngestionJob, DocumentStatusEvent)
 │
 ├── infra/                      # External service clients
 │   ├── queue/
@@ -140,7 +142,7 @@ rag-vector-engine/
 │       └── vector_db.py        # Qdrant client (with tenant pre-filtering)
 │
 ├── workers/                    # Ingestion pipeline worker
-│   ├── consumer.py             # RabbitMQ consumer on INGESTION_QUEUE (logs + acks for now; DLQ later)
+│   ├── consumer.py             # Consumes INGESTION_QUEUE, reports status to DOCUMENT_EVENTS_QUEUE (INDEXED for now; DLQ later)
 │   ├── extractor.py            # Routing by detected MIME + direct extraction to Markdown
 │   ├── ocr.py                  # LightOn OCR for images & scanned PDFs
 │   ├── chunker.py              # Markdown-aware structural splitter
@@ -295,6 +297,19 @@ Upload up to **50 files per request** (`MAX_UPLOAD_FILES`) as repeated multipart
 ```
 
 The message's `message_id` is the `doc_id` and its `type` is `ingestion.job`. Retries and a dead-letter queue are not set up yet.
+
+The worker (`python -m workers.consumer`) reports each job's outcome as a status event on `DOCUMENT_EVENTS_QUEUE` (`document.events`), and acks the job only after RabbitMQ has confirmed that event. The API consumes the queue in the background (disable with `CONSUME_DOCUMENT_EVENTS=false`) and updates the document row, matching both `doc_id` and `business_id`. Until the extraction pipeline exists, every job is reported as `INDEXED`:
+
+```json
+{
+  "schema_version": 1,
+  "doc_id": "0192f6a5-1c2d-7e3f-a4b5-c6d7e8f90a1b",
+  "business_id": "0192f6a4-3b1e-7c2d-9a4f-5e8b1c2d3e4f",
+  "status": "INDEXED",
+  "occurred_at": "2026-10-29T11:42:07.300000Z",
+  "detail": null
+}
+```
 
 ```bash
 curl -X POST http://localhost:8000/v1/documents/upload \

@@ -1,8 +1,10 @@
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 
+from api.consumers import run_document_events_consumer
 from api.middleware.auth import JWTAuthMiddleware, require_auth
 from api.middleware.request_logger import RequestLoggingMiddleware
 from api.routes.routes import router
@@ -18,7 +20,14 @@ setup_logging(get_settings().log_level)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    stop = asyncio.Event()
+    events_consumer = (
+        asyncio.create_task(run_document_events_consumer(stop)) if get_settings().consume_document_events else None
+    )
     yield
+    stop.set()
+    if events_consumer is not None:
+        await events_consumer
     await close_job_publisher()
     await dispose_engine()
 

@@ -4,7 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from db.models.schema import Document
+from db.models.schema import Document, DocumentStatus
 
 
 class IngestionJob(BaseModel):
@@ -33,3 +33,14 @@ class IngestionJob(BaseModel):
             size_bytes=doc.size_bytes,
             uploaded_at=doc.created_at,
         )
+
+
+class DocumentStatusEvent(BaseModel):
+    """Payload the worker publishes to DOCUMENT_EVENTS_QUEUE; the API applies it to the document row."""
+
+    schema_version: Literal[1] = 1
+    doc_id: UUID
+    business_id: UUID
+    status: DocumentStatus
+    occurred_at: datetime
+    detail: str | None = None

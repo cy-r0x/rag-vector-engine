@@ -29,7 +29,9 @@ class Settings(BaseSettings):
 
     rabbitmq_url: str = "amqp://rve:rve@localhost:5672/"
     ingestion_queue: str = "ingestion.jobs"
+    document_events_queue: str = "document.events"
     consumer_prefetch: int = 10
+    consume_document_events: bool = True
 
     @field_validator("s3_endpoint_url", "s3_access_key_id", "s3_secret_access_key", mode="before")
     @classmethod
