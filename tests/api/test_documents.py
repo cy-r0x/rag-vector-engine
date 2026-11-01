@@ -2,13 +2,14 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from api.handlers.documents import _clean_filename
 from api.main import app
 from common.auth import get_jwt_codec
 from common.config import get_settings
 from db.models import Document, DocumentStatus
+from infra.storage.blob import extracted_markdown_key
 from tests.api.conftest import InMemoryBlobStorage, InMemoryJobPublisher, run_db
 from tests.api.test_file_type import DOCX_BYTES, PDF_BYTES, PNG_BYTES, XLSX_BYTES
 
@@ -279,6 +280,81 @@ def test_list_returns_own_documents_newest_first(
     assert newest["size_bytes"] == len(CSV_BYTES)
     assert newest["created_at"] and newest["updated_at"]
     assert "storage_key" not in newest
+
+
+def _upload_one(client: TestClient, business: dict) -> dict:
+    response = client.post(URL, headers=business["headers"], files=_files(("notes.txt", TXT_BYTES)))
+    assert response.status_code == 201, response.text
+    return response.json()["documents"][0]
+
+
+def _mark_indexed(doc_id: str) -> None:
+    async def mark(session):
+        await session.execute(
+            update(Document).where(Document.id == uuid.UUID(doc_id)).values(status=DocumentStatus.INDEXED)
+        )
+        await session.commit()
+
+    run_db(mark)
+
+
+def test_get_document_returns_own_document(client: TestClient, blob_storage: InMemoryBlobStorage, business: dict):
+    doc = _upload_one(client, business)
+
+    response = client.get(f"/v1/documents/{doc['doc_id']}", headers=business["headers"])
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["doc_id"], body["filename"], body["status"]) == (doc["doc_id"], "notes.txt", "QUEUED")
+
+
+def test_get_document_hides_other_businesses_and_unknown_ids(
+    client: TestClient, blob_storage: InMemoryBlobStorage, business: dict
+):
+    doc = _upload_one(client, business)
+    other = _register_business(client)
+
+    for doc_id in (doc["doc_id"], str(uuid.uuid7())):
+        for path in (f"/v1/documents/{doc_id}", f"/v1/documents/{doc_id}/markdown"):
+            response = client.get(path, headers=other["headers"])
+            assert response.status_code == 404, path
+            assert response.json()["detail"] == "Document not found"
+
+
+def test_get_document_rejects_malformed_id(client: TestClient, business: dict):
+    assert client.get("/v1/documents/not-a-uuid", headers=business["headers"]).status_code == 422
+
+
+def test_markdown_requires_an_indexed_document(client: TestClient, blob_storage: InMemoryBlobStorage, business: dict):
+    doc = _upload_one(client, business)
+
+    response = client.get(f"/v1/documents/{doc['doc_id']}/markdown", headers=business["headers"])
+
+    assert response.status_code == 409
+    assert "once the document is indexed" in response.json()["detail"]
+
+
+def test_markdown_of_indexed_document(client: TestClient, blob_storage: InMemoryBlobStorage, business: dict):
+    doc = _upload_one(client, business)
+    _mark_indexed(doc["doc_id"])
+    key = extracted_markdown_key(business["business_id"], doc["doc_id"])
+    blob_storage.objects[key] = ("# Notes\n\n| a | b |\n| --- | --- |\n".encode(), "text/markdown; charset=utf-8")
+
+    response = client.get(f"/v1/documents/{doc['doc_id']}/markdown", headers=business["headers"])
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "text/markdown; charset=utf-8"
+    assert response.text == "# Notes\n\n| a | b |\n| --- | --- |\n"
+
+
+def test_markdown_missing_from_storage_is_404(client: TestClient, blob_storage: InMemoryBlobStorage, business: dict):
+    doc = _upload_one(client, business)
+    _mark_indexed(doc["doc_id"])
+
+    response = client.get(f"/v1/documents/{doc['doc_id']}/markdown", headers=business["headers"])
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Extracted Markdown not found for this document"
 
 
 def test_database_failure_removes_stored_objects(migrated_db: None, blob_storage: InMemoryBlobStorage, client):

@@ -7,7 +7,7 @@ from typing import Any
 from uuid import UUID, uuid7
 
 from fastapi import Depends, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,7 +30,13 @@ from common.config import get_settings
 from db import get_session
 from db.models import Document, DocumentStatus, IngestionJob
 from infra.queue import JobPublisher, get_job_publisher
-from infra.storage.blob import BlobStorage, get_blob_storage, object_key
+from infra.storage.blob import (
+    BlobStorage,
+    ObjectNotFoundError,
+    extracted_markdown_key,
+    get_blob_storage,
+    object_key,
+)
 
 logger = logging.getLogger("api.documents")
 
@@ -100,20 +106,57 @@ async def list_documents(
     rows = await session.scalars(
         select(Document).where(Document.business_id == business_id).order_by(Document.id.desc())
     )
-    return DocumentListResponse(
-        documents=[
-            DocumentSummary(
-                doc_id=doc.id,
-                filename=doc.filename,
-                status=doc.status,
-                status_detail=doc.status_detail,
-                detected_mime=doc.detected_mime,
-                size_bytes=doc.size_bytes,
-                created_at=doc.created_at,
-                updated_at=doc.updated_at,
-            )
-            for doc in rows
-        ]
+    return DocumentListResponse(documents=[_to_summary(doc) for doc in rows])
+
+
+async def get_document(
+    doc_id: UUID,
+    business_id: UUID = Depends(get_business_id),
+    session: AsyncSession = Depends(get_session),
+) -> DocumentSummary:
+    return _to_summary(await _owned_document(session, business_id, doc_id))
+
+
+async def get_document_markdown(
+    doc_id: UUID,
+    business_id: UUID = Depends(get_business_id),
+    session: AsyncSession = Depends(get_session),
+    storage: BlobStorage = Depends(get_blob_storage),
+) -> Response:
+    """The Markdown extracted from the document; available once it is INDEXED."""
+    doc = await _owned_document(session, business_id, doc_id)
+    if doc.status is not DocumentStatus.INDEXED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Markdown is available once the document is indexed (status: {doc.status})",
+        )
+    try:
+        markdown = await storage.get_object(extracted_markdown_key(str(business_id), str(doc_id)))
+    except ObjectNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Extracted Markdown not found for this document"
+        ) from None
+    return Response(content=markdown, media_type="text/markdown; charset=utf-8")
+
+
+async def _owned_document(session: AsyncSession, business_id: UUID, doc_id: UUID) -> Document:
+    """The caller's document; another business's document is indistinguishable from a missing one (404)."""
+    doc = await session.scalar(select(Document).where(Document.id == doc_id, Document.business_id == business_id))
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    return doc
+
+
+def _to_summary(doc: Document) -> DocumentSummary:
+    return DocumentSummary(
+        doc_id=doc.id,
+        filename=doc.filename,
+        status=doc.status,
+        status_detail=doc.status_detail,
+        detected_mime=doc.detected_mime,
+        size_bytes=doc.size_bytes,
+        created_at=doc.created_at,
+        updated_at=doc.updated_at,
     )
 
 

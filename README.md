@@ -408,7 +408,14 @@ curl http://localhost:8000/v1/documents \
 
 Documents are scoped to the token's `business_id` and returned newest first. `status_detail` is the failure reason when `status` is `FAILED` (for example `"The PDF has no text layer (scanned?); OCR is not available yet"`), otherwise `null`.
 
-A single document can be fetched with `GET /v1/documents/{doc_id}`.
+A single document can be fetched with `GET /v1/documents/{doc_id}` (same fields). Its extracted Markdown is served by `GET /v1/documents/{doc_id}/markdown` as `text/markdown`, once the document is `INDEXED` (`409` before that):
+
+```bash
+curl http://localhost:8000/v1/documents/0192f6a5-1c2d-7e3f-a4b5-c6d7e8f90a1b/markdown \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+Both return `404` for a document that doesn't exist or belongs to another business.
 
 ---
 
