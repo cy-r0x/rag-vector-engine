@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
 
@@ -9,6 +10,7 @@ from pydantic import ValidationError
 from common.config import get_settings
 from common.logger import setup_logging
 from db.models import DocumentStatus, DocumentStatusEvent, IngestionJob
+from infra.embeddings import Embedder, EmbeddingError, get_embedder
 from infra.queue import connect, declare_queue, open_channel
 from infra.storage.blob import (
     BlobStorage,
@@ -18,7 +20,9 @@ from infra.storage.blob import (
     extracted_markdown_key,
     get_blob_storage,
 )
+from infra.storage.vector_db import VectorStore, get_vector_store
 from workers.chunker import chunk_markdown, to_jsonl
+from workers.embedder import index_chunks
 from workers.extractor import ExtractionError, extract_markdown
 from workers.publisher import publish_status
 
@@ -28,18 +32,28 @@ _MAX_LOGGED_BODY_CHARS = 2000
 _RETRY_DELAY_SECONDS = 5
 
 
+@dataclass(frozen=True)
+class Pipeline:
+    """The services one ingestion job uses."""
+
+    storage: BlobStorage
+    embedder: Embedder
+    vector_store: VectorStore
+
+
 class _JobFailed(Exception):
     """The document itself can't be processed; reported as FAILED with this message as the detail."""
 
 
 async def handle_message(
-    message: AbstractIncomingMessage, *, channel: AbstractChannel, events_queue: str, storage: BlobStorage
+    message: AbstractIncomingMessage, *, channel: AbstractChannel, events_queue: str, pipeline: Pipeline
 ) -> None:
-    """Extract one document's text to Markdown, chunk it, and report its status.
+    """Extract one document to Markdown, chunk it, embed and index the chunks, and report its status.
 
     A malformed job is rejected without requeue. Problems with the document (no text layer, corrupt file, missing
-    source) are reported as FAILED and acked. Infrastructure errors (storage, RabbitMQ) requeue the job, so it is
-    only acked once its outcome has been recorded on the events queue.
+    source, input rejected by the embedding provider) are reported as FAILED and acked. Infrastructure errors
+    (storage, RabbitMQ, Qdrant, transient embedding errors) requeue the job, so it is only acked once its outcome
+    has been recorded on the events queue.
     """
     body = message.body.decode("utf-8", errors="replace")
     logger.info(
@@ -61,12 +75,11 @@ async def handle_message(
     try:
         await report(DocumentStatus.PROCESSING)
         try:
-            await _process(job, storage)
+            await _process(job, pipeline)
         except _JobFailed as exc:
             logger.warning("Failed doc_id=%s: %s", job.doc_id, exc)
             await report(DocumentStatus.FAILED, detail=str(exc))
         else:
-            # INDEXED is a placeholder until embedding exists; for now it means "text extracted and chunked".
             await report(DocumentStatus.INDEXED)
     except Exception:
         logger.exception("Infrastructure error while processing doc_id=%s; requeueing the job", job.doc_id)
@@ -77,7 +90,8 @@ async def handle_message(
     await message.ack()
 
 
-async def _process(job: IngestionJob, storage: BlobStorage) -> None:
+async def _process(job: IngestionJob, pipeline: Pipeline) -> None:
+    storage = pipeline.storage
     business_id, doc_id = str(job.business_id), str(job.doc_id)
     if not job.storage_key.startswith(document_prefix(business_id, doc_id)):
         raise _JobFailed("Source file key does not belong to this document")
@@ -107,6 +121,20 @@ async def _process(job: IngestionJob, storage: BlobStorage) -> None:
     await storage.put_object(key, to_jsonl(chunks), content_type="application/x-ndjson")
     logger.info("Chunked doc_id=%s into %d chunks at %s", job.doc_id, len(chunks), key)
 
+    try:
+        await index_chunks(
+            embedder=pipeline.embedder,
+            store=pipeline.vector_store,
+            business_id=job.business_id,
+            doc_id=job.doc_id,
+            chunks=chunks,
+        )
+    except EmbeddingError as exc:
+        if exc.retryable:
+            raise
+        raise _JobFailed(f"The document could not be embedded: {exc}") from exc
+    logger.info("Indexed doc_id=%s: %d vectors (%s)", job.doc_id, len(chunks), pipeline.embedder.model)
+
 
 async def _report(
     channel: AbstractChannel, events_queue: str, job: IngestionJob, status: DocumentStatus, detail: str | None = None
@@ -127,19 +155,28 @@ async def consume(
     queue_name: str,
     events_queue: str,
     *,
-    storage: BlobStorage | None = None,
+    pipeline: Pipeline | None = None,
     prefetch: int = 10,
     stop: asyncio.Event | None = None,
 ) -> None:
     """Consume `queue_name` until `stop` is set (or forever). Reconnects automatically."""
-    storage = storage or get_blob_storage()
+    pipeline = pipeline or Pipeline(storage=get_blob_storage(), embedder=get_embedder(), vector_store=get_vector_store())
+    await pipeline.vector_store.ensure_collection(pipeline.embedder.dimensions)
     connection = await connect(url)
     async with connection:
         channel = await open_channel(connection, prefetch=prefetch)
         queue = await declare_queue(channel, queue_name)
         await declare_queue(channel, events_queue)
-        await queue.consume(partial(handle_message, channel=channel, events_queue=events_queue, storage=storage))
-        logger.info("Consuming from queue %r (prefetch=%d), reporting to %r", queue_name, prefetch, events_queue)
+        await queue.consume(partial(handle_message, channel=channel, events_queue=events_queue, pipeline=pipeline))
+        logger.info(
+            "Consuming from queue %r (prefetch=%d), reporting to %r; embeddings: %s %s (%d dims)",
+            queue_name,
+            prefetch,
+            events_queue,
+            pipeline.embedder.provider,
+            pipeline.embedder.model,
+            pipeline.embedder.dimensions,
+        )
         await (stop or asyncio.Event()).wait()
 
 

@@ -42,8 +42,18 @@ class Settings(BaseSettings):
     embedding_batch_size: int = 100
     gemini_api_key: str | None = None
 
+    qdrant_url: str = "http://localhost:6333"
+    qdrant_api_key: str | None = None
+    qdrant_collection: str = "document_chunks"
+
     @field_validator(
-        "s3_endpoint_url", "s3_access_key_id", "s3_secret_access_key", "embedding_model", "gemini_api_key", mode="before"
+        "s3_endpoint_url",
+        "s3_access_key_id",
+        "s3_secret_access_key",
+        "embedding_model",
+        "gemini_api_key",
+        "qdrant_api_key",
+        mode="before",
     )
     @classmethod
     def _empty_to_none(cls, value: str | None) -> str | None:

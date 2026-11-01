@@ -12,8 +12,9 @@ DEFAULT_MODEL = "gemini-embedding-001"
 MAX_BATCH_SIZE = 100
 
 _TIMEOUT_MS = 60_000
+_RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 _RETRY = types.HttpRetryOptions(
-    attempts=4, initial_delay=1.0, max_delay=30.0, http_status_codes=[408, 429, 500, 502, 503, 504]
+    attempts=4, initial_delay=1.0, max_delay=30.0, http_status_codes=sorted(_RETRYABLE_STATUS_CODES)
 )
 
 
@@ -88,9 +89,12 @@ class GeminiEmbedder:
                 config=types.EmbedContentConfig(task_type=task_type, output_dimensionality=self._dimensions),
             )
         except errors.APIError as exc:
-            raise EmbeddingError(f"Gemini embedding request failed ({exc.code} {exc.status}): {exc.message}") from exc
+            raise EmbeddingError(
+                f"Gemini embedding request failed ({exc.code} {exc.status}): {exc.message}",
+                retryable=exc.code in _RETRYABLE_STATUS_CODES,
+            ) from exc
         except Exception as exc:
-            raise EmbeddingError(f"Gemini embedding request failed: {exc}") from exc
+            raise EmbeddingError(f"Gemini embedding request failed: {exc}", retryable=True) from exc
 
         embeddings = response.embeddings or []
         if len(embeddings) != len(texts):

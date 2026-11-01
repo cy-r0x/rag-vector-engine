@@ -34,12 +34,13 @@ Status: **done** = implemented and tested, **stub** = empty file reserved by the
 | `infra/queue/` | RabbitMQ `connect` / `open_channel` / `declare_queue`; `JobPublisher` / `RabbitJobPublisher` (confirmed, mandatory, persistent publishes; plain connection opened on demand), `get_job_publisher()` (FastAPI dependency, closed on shutdown) | done |
 | `infra/redis/` | Redis client | stub |
 | `infra/storage/blob.py` | `BlobStorage` + `S3BlobStorage` (MinIO now, AWS S3 via env), `object_key()` (source), `extracted_markdown_key()`, `chunks_key()`, `document_prefix()` | done |
-| `infra/storage/vector_db.py` | Qdrant client with `business_id` pre-filter | stub |
+| `infra/storage/vector_db.py` | `VectorStore` protocol + `QdrantVectorStore` (one collection; `business_id` tenant index, per-tenant HNSW; `ensure_collection`, `replace_document_chunks`, `delete_document`, `search`, all requiring `business_id`), `get_vector_store()` | done |
 | `workers/consumer.py` | Consumes `INGESTION_QUEUE`: reports `PROCESSING`, fetches the source, extracts, stores `extracted.md`, chunks it into `chunks.jsonl`, reports `INDEXED` (placeholder) or `FAILED` + detail; malformed jobs rejected; infra errors requeue (no DLQ yet) | done |
 | `workers/extractor.py` | `extract_markdown(data, mime)`: PDF (pypdf), DOCX (python-docx), XLSX (openpyxl), CSV, TXT → Markdown; `ExtractionError` / `NeedsOcrError` | done |
 | `workers/publisher.py` | `publish_status()`: confirmed, persistent `DocumentStatusEvent` to `DOCUMENT_EVENTS_QUEUE` | done |
 | `workers/chunker.py` | `chunk_markdown(markdown, size, overlap)`: simple paragraph packer (`CHUNK_SIZE` / `CHUNK_OVERLAP`), `to_jsonl()`; not header/table-aware yet | done |
-| `workers/{ocr,embedder}.py` | Ingestion pipeline steps (embedder will call `infra.embeddings`) | stub |
+| `workers/embedder.py` | `index_chunks()`: embeds chunks via `infra.embeddings`, upserts them into the vector store | done |
+| `workers/ocr.py` | LightOn OCR pipeline step | stub |
 | `infra/embeddings/` | Provider pattern: `Embedder` protocol (`base.py`), `GeminiEmbedder` (`gemini.py`: `gemini-embedding-001`, retrieval task types, `EMBEDDING_DIMENSIONS`, batches ≤100, SDK retries, L2-normalized), `PROVIDERS` registry + `create_embedder()` / `get_embedder()` (`factory.py`, selected by `EMBEDDING_PROVIDER`) | done |
 | `tests/` | Mirrors the source tree; MinIO/Postgres/RabbitMQ tests skip if the service is down (Postgres tests use the `rve_test` DB via the `migrated_db`/`client` fixtures in `tests/api/conftest.py`; `blob_storage` fixture swaps in an in-memory store) | done |
 
@@ -59,7 +60,7 @@ Status: **done** = implemented and tested, **stub** = empty file reserved by the
 ## Run & test
 
 ```powershell
-docker compose up -d                      # MinIO (+ bucket init), Postgres (host port 5433), RabbitMQ
+docker compose up -d                      # MinIO (+ bucket init), Postgres (host port 5433), RabbitMQ, Qdrant (6333)
 .venv\Scripts\activate
 pip install -r requirements-dev.txt
 alembic upgrade head                      # apply DB migrations

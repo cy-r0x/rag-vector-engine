@@ -96,20 +96,29 @@ async def test_empty_text_is_rejected_before_calling_the_api():
     assert client.models.calls == []
 
 
-async def test_api_errors_are_wrapped():
+@pytest.mark.parametrize(
+    ("error", "status", "retryable"),
+    [
+        (errors.ClientError, 429, True),
+        (errors.ServerError, 503, True),
+        (errors.ClientError, 400, False),
+        (errors.ClientError, 403, False),
+    ],
+)
+async def test_api_errors_are_wrapped_and_classified(error, status: int, retryable: bool):
     embedder, client = _embedder()
-    client.models.error = errors.ClientError(
-        429, {"error": {"code": 429, "message": "Quota exceeded", "status": "RESOURCE_EXHAUSTED"}}
-    )
-    with pytest.raises(EmbeddingError, match="429 RESOURCE_EXHAUSTED.*Quota exceeded"):
+    client.models.error = error(status, {"error": {"code": status, "message": "Boom", "status": "SOME_STATUS"}})
+    with pytest.raises(EmbeddingError, match=f"{status} SOME_STATUS.*Boom") as raised:
         await embedder.embed_query("hello")
+    assert raised.value.retryable is retryable
 
 
-async def test_network_errors_are_wrapped():
+async def test_network_errors_are_wrapped_as_retryable():
     embedder, client = _embedder()
     client.models.error = ConnectionError("connection reset")
-    with pytest.raises(EmbeddingError, match="connection reset"):
+    with pytest.raises(EmbeddingError, match="connection reset") as raised:
         await embedder.embed_query("hello")
+    assert raised.value.retryable is True
 
 
 @pytest.mark.parametrize(

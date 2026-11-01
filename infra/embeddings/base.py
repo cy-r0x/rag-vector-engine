@@ -5,7 +5,15 @@ Vector = list[float]
 
 
 class EmbeddingError(Exception):
-    """The provider could not embed the input (network, quota, invalid response, ...)."""
+    """The provider could not embed the input.
+
+    `retryable` is True for transient failures (network, rate limit, provider outage) where trying again later
+    can succeed, and False when the input itself was rejected or the response was unusable.
+    """
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 class EmbeddingConfigError(EmbeddingError):

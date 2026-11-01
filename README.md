@@ -143,14 +143,14 @@ rag-vector-engine/
 │   │   └── redis.py            # Redis client
 │   └── storage/
 │       ├── blob.py             # BlobStorage interface + S3-API adapter (MinIO or AWS S3)
-│       └── vector_db.py        # Qdrant client (with tenant pre-filtering)
+│       └── vector_db.py        # VectorStore protocol + Qdrant store (mandatory business_id pre-filter)
 │
 ├── workers/                    # Ingestion pipeline worker
 │   ├── consumer.py             # Consumes INGESTION_QUEUE, reports status to DOCUMENT_EVENTS_QUEUE (INDEXED for now; DLQ later)
 │   ├── extractor.py            # Routing by detected MIME + direct extraction to Markdown
 │   ├── ocr.py                  # LightOn OCR for images & scanned PDFs
 │   ├── chunker.py              # Simple paragraph-packing chunker (Markdown-aware splitting later)
-│   ├── embedder.py             # Pipeline step: embeds chunks via infra.embeddings (not wired in yet)
+│   ├── embedder.py             # Pipeline step: embeds chunks via infra.embeddings, upserts into the vector store
 │   └── publisher.py            # RabbitMQ document status publisher
 │
 ├── tests/                      # pytest suite
@@ -176,7 +176,7 @@ rag-vector-engine/
 │       ├── test_chunker.py     # Chunk packing, overlap, and long-paragraph splitting
 │       └── test_consumer.py    # Worker integration tests (run against RabbitMQ)
 │
-├── docker-compose.yml          # Local infra (currently MinIO + bucket init, Postgres, RabbitMQ)
+├── docker-compose.yml          # Local infra (MinIO + bucket init, Postgres, RabbitMQ, Qdrant)
 ├── alembic.ini                 # Alembic configuration
 ├── .env.example                # Sample environment configurations
 ├── pyproject.toml              # pytest configuration
@@ -203,12 +203,12 @@ cd rag-vector-engine
 # Copy environment variables
 cp .env.example .env
 
-# Start local infrastructure (currently MinIO, Postgres, and RabbitMQ; Redis
-# and Qdrant are added to docker-compose.yml as they are built)
+# Start local infrastructure (MinIO, Postgres, RabbitMQ, and Qdrant; Redis is
+# added to docker-compose.yml when it is built)
 docker compose up -d
 ```
 
-The `minio-init` container creates the `documents` bucket and exits. The MinIO console is at http://localhost:9001 (`minioadmin` / `minioadmin`). The RabbitMQ management UI is at http://localhost:15672 (`rve` / `rve`). Postgres listens on host port **5433** (`POSTGRES_PORT`), so it doesn't clash with a natively installed Postgres on 5432.
+The `minio-init` container creates the `documents` bucket and exits. Qdrant listens on http://localhost:6333 (`QDRANT_PORT`; dashboard at `/dashboard`); the worker creates the `document_chunks` collection on startup. The MinIO console is at http://localhost:9001 (`minioadmin` / `minioadmin`). The RabbitMQ management UI is at http://localhost:15672 (`rve` / `rve`). Postgres listens on host port **5433** (`POSTGRES_PORT`), so it doesn't clash with a natively installed Postgres on 5432.
 
 ### 3. Install Dependencies
 ```bash
@@ -217,7 +217,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-For development and tests, install `requirements-dev.txt` instead and run the suite (MinIO, Postgres, and RabbitMQ integration tests are skipped automatically if the service isn't running). Postgres tests create and migrate a separate `rve_test` database (`TEST_DATABASE_URL`):
+For development and tests, install `requirements-dev.txt` instead and run the suite (MinIO, Postgres, RabbitMQ, and Qdrant integration tests are skipped automatically if the service isn't running, and the live Gemini test if `GEMINI_API_KEY` is unset). Postgres tests create and migrate a separate `rve_test` database (`TEST_DATABASE_URL`):
 ```bash
 pip install -r requirements-dev.txt
 pytest -v
@@ -323,7 +323,7 @@ Next, `workers/chunker.py` splits the Markdown with a simple paragraph packer: b
 {"index": 0, "text": "## Page 1\n\nQuarterly revenue grew ...", "start": 0, "end": 918}
 ```
 
-It then reports `INDEXED` (a placeholder until embedding exists). Documents that can't be extracted are reported as `FAILED` with a `detail`: PDFs without a text layer (scanned; OCR is not available yet), password-protected or damaged files, files with no text, or a missing source file. Storage or RabbitMQ errors requeue the job instead:
+The chunks are then embedded (`infra/embeddings`, Gemini by default) and upserted into Qdrant under the document's `business_id` (`workers/embedder.py`), and the worker reports `INDEXED`. Documents that can't be processed are reported as `FAILED` with a `detail`: PDFs without a text layer (scanned; OCR is not available yet), password-protected or damaged files, files with no text, a missing source file, or input the embedding provider rejects. Storage, RabbitMQ and Qdrant errors, and transient embedding errors (rate limits, provider outages), requeue the job instead:
 
 ```json
 {
@@ -553,7 +553,7 @@ Validation rules:
        ]
    )
    ```
-   `business_id` (and `doc_id`, used for deletion and re-indexing) are created as keyword payload indexes on the collection, so the pre-filter is an index lookup rather than a scan.
+   This is implemented in `infra/storage/vector_db.py` (`QdrantVectorStore`), where `business_id` is a required keyword argument of every read and delete, so an unscoped query can't be written. All tenants share one collection (`QDRANT_COLLECTION`, cosine distance, `EMBEDDING_DIMENSIONS`): `business_id` is a keyword index with `is_tenant=true` (tenant-aware storage), the global HNSW graph is disabled (`m=0`) in favour of per-tenant graphs (`payload_m=16`), and `doc_id` / `chunk_index` are indexed for deletion and re-indexing. Point ids are `uuid5(doc_id, chunk_index)`, so re-indexing a document overwrites its points in place and then drops any stale higher-numbered chunks.
 3. **JWT Authentication:** Tokens are signed and verified in one place, `common/auth/tokens.py` (`JWTCodec.encode` / `JWTCodec.decode`, HS256 with `JWT_SECRET` of at least 32 characters, lifetime `JWT_EXPIRES_IN` seconds). `api/middleware/auth.py` reads `Authorization: Bearer <token>`, verifies it with the codec, and requires the `sub`, `business_id`, and `exp` claims. The decoded claims are attached to the request as `request.state.token_payload` (routes read them via the `get_token_payload` dependency). **Every route is protected by default** via the app-wide `require_auth` dependency; missing, malformed, expired, or wrongly signed tokens get `401`. To make a route public, decorate its endpoint/handler with `@public` (from `common.decorators`):
    ```python
    @public
