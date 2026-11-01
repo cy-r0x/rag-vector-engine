@@ -10,7 +10,15 @@ from common.config import get_settings
 from common.logger import setup_logging
 from db.models import DocumentStatus, DocumentStatusEvent, IngestionJob
 from infra.queue import connect, declare_queue, open_channel
-from infra.storage.blob import BlobStorage, ObjectNotFoundError, document_prefix, extracted_markdown_key, get_blob_storage
+from infra.storage.blob import (
+    BlobStorage,
+    ObjectNotFoundError,
+    chunks_key,
+    document_prefix,
+    extracted_markdown_key,
+    get_blob_storage,
+)
+from workers.chunker import chunk_markdown, to_jsonl
 from workers.extractor import ExtractionError, extract_markdown
 from workers.publisher import publish_status
 
@@ -27,7 +35,7 @@ class _JobFailed(Exception):
 async def handle_message(
     message: AbstractIncomingMessage, *, channel: AbstractChannel, events_queue: str, storage: BlobStorage
 ) -> None:
-    """Extract one document's text to Markdown and report its status.
+    """Extract one document's text to Markdown, chunk it, and report its status.
 
     A malformed job is rejected without requeue. Problems with the document (no text layer, corrupt file, missing
     source) are reported as FAILED and acked. Infrastructure errors (storage, RabbitMQ) requeue the job, so it is
@@ -58,7 +66,7 @@ async def handle_message(
             logger.warning("Failed doc_id=%s: %s", job.doc_id, exc)
             await report(DocumentStatus.FAILED, detail=str(exc))
         else:
-            # INDEXED is a placeholder until chunking and embedding exist; for now it means "text extracted".
+            # INDEXED is a placeholder until embedding exists; for now it means "text extracted and chunked".
             await report(DocumentStatus.INDEXED)
     except Exception:
         logger.exception("Infrastructure error while processing doc_id=%s; requeueing the job", job.doc_id)
@@ -90,6 +98,14 @@ async def _process(job: IngestionJob, storage: BlobStorage) -> None:
     key = extracted_markdown_key(business_id, doc_id)
     await storage.put_object(key, markdown.encode("utf-8"), content_type="text/markdown; charset=utf-8")
     logger.info("Extracted doc_id=%s (%s, %d chars) to %s", job.doc_id, job.detected_mime, len(markdown), key)
+
+    settings = get_settings()
+    chunks = await asyncio.to_thread(
+        chunk_markdown, markdown, size=settings.chunk_size, overlap=settings.chunk_overlap
+    )
+    key = chunks_key(business_id, doc_id)
+    await storage.put_object(key, to_jsonl(chunks), content_type="application/x-ndjson")
+    logger.info("Chunked doc_id=%s into %d chunks at %s", job.doc_id, len(chunks), key)
 
 
 async def _report(

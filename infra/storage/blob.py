@@ -66,6 +66,11 @@ def extracted_markdown_key(business_id: str, doc_id: str) -> str:
     return f"{document_prefix(business_id, doc_id)}extracted.md"
 
 
+def chunks_key(business_id: str, doc_id: str) -> str:
+    """Build `{business_id}/{doc_id}/chunks.jsonl`, where the worker stores a document's chunks (one JSON per line)."""
+    return f"{document_prefix(business_id, doc_id)}chunks.jsonl"
+
+
 def document_prefix(business_id: str, doc_id: str) -> str:
     """Build `{business_id}/{doc_id}/`, the prefix holding every object of one document."""
     if not _ID_PATTERN.fullmatch(business_id):

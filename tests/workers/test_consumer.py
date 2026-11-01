@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import socket
 import uuid
@@ -11,7 +12,7 @@ import pytest
 
 from api.validators.file_type import PDF, TXT
 from db.models import DocumentStatus, DocumentStatusEvent, IngestionJob
-from infra.storage.blob import extracted_markdown_key
+from infra.storage.blob import chunks_key, extracted_markdown_key
 from tests.api.conftest import InMemoryBlobStorage
 from tests.workers.sample_documents import blank_pdf
 from workers.consumer import consume
@@ -105,6 +106,11 @@ async def test_text_is_extracted_stored_and_reported_as_indexed():
         assert {(event.doc_id, event.business_id) for event in events} == {(job.doc_id, job.business_id)}
         key = extracted_markdown_key(str(job.business_id), str(job.doc_id))
         assert storage.objects[key] == (b"Quarterly notes\n\nRevenue grew 12%.\n", "text/markdown; charset=utf-8")
+        body, content_type = storage.objects[chunks_key(str(job.business_id), str(job.doc_id))]
+        assert content_type == "application/x-ndjson"
+        assert [json.loads(line) for line in body.decode().splitlines()] == [
+            {"index": 0, "text": "Quarterly notes\n\nRevenue grew 12%.", "start": 0, "end": 34}
+        ]
         assert await _message_count(channel, jobs_queue) == 0
 
 
@@ -120,6 +126,7 @@ async def test_scanned_pdf_is_reported_as_failed_with_reason():
         assert [event.status for event in events] == [DocumentStatus.PROCESSING, DocumentStatus.FAILED]
         assert "no text layer" in events[1].detail
         assert extracted_markdown_key(str(job.business_id), str(job.doc_id)) not in storage.objects
+        assert chunks_key(str(job.business_id), str(job.doc_id)) not in storage.objects
         assert await _message_count(channel, jobs_queue) == 0
 
 

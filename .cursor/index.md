@@ -33,12 +33,13 @@ Status: **done** = implemented and tested, **stub** = empty file reserved by the
 | `db/migrations/`, `alembic.ini` | Alembic (async); `env.py` uses `DATABASE_URL` unless `sqlalchemy.url` is set | done |
 | `infra/queue/` | RabbitMQ `connect` / `open_channel` / `declare_queue`; `JobPublisher` / `RabbitJobPublisher` (confirmed, mandatory, persistent publishes; plain connection opened on demand), `get_job_publisher()` (FastAPI dependency, closed on shutdown) | done |
 | `infra/redis/` | Redis client | stub |
-| `infra/storage/blob.py` | `BlobStorage` + `S3BlobStorage` (MinIO now, AWS S3 via env), `object_key()` (source), `extracted_markdown_key()`, `document_prefix()` | done |
+| `infra/storage/blob.py` | `BlobStorage` + `S3BlobStorage` (MinIO now, AWS S3 via env), `object_key()` (source), `extracted_markdown_key()`, `chunks_key()`, `document_prefix()` | done |
 | `infra/storage/vector_db.py` | Qdrant client with `business_id` pre-filter | stub |
-| `workers/consumer.py` | Consumes `INGESTION_QUEUE`: reports `PROCESSING`, fetches the source, extracts, stores `extracted.md`, reports `INDEXED` (placeholder) or `FAILED` + detail; malformed jobs rejected; infra errors requeue (no DLQ yet) | done |
+| `workers/consumer.py` | Consumes `INGESTION_QUEUE`: reports `PROCESSING`, fetches the source, extracts, stores `extracted.md`, chunks it into `chunks.jsonl`, reports `INDEXED` (placeholder) or `FAILED` + detail; malformed jobs rejected; infra errors requeue (no DLQ yet) | done |
 | `workers/extractor.py` | `extract_markdown(data, mime)`: PDF (pypdf), DOCX (python-docx), XLSX (openpyxl), CSV, TXT → Markdown; `ExtractionError` / `NeedsOcrError` | done |
 | `workers/publisher.py` | `publish_status()`: confirmed, persistent `DocumentStatusEvent` to `DOCUMENT_EVENTS_QUEUE` | done |
-| `workers/{ocr,chunker,embedder}.py` | Ingestion pipeline steps | stub |
+| `workers/chunker.py` | `chunk_markdown(markdown, size, overlap)`: simple paragraph packer (`CHUNK_SIZE` / `CHUNK_OVERLAP`), `to_jsonl()`; not header/table-aware yet | done |
+| `workers/{ocr,embedder}.py` | Ingestion pipeline steps | stub |
 | `tests/` | Mirrors the source tree; MinIO/Postgres/RabbitMQ tests skip if the service is down (Postgres tests use the `rve_test` DB via the `migrated_db`/`client` fixtures in `tests/api/conftest.py`; `blob_storage` fixture swaps in an in-memory store) | done |
 
 ## Conventions

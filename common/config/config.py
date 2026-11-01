@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     consumer_prefetch: int = 10
     consume_document_events: bool = True
 
+    chunk_size: int = 1000
+    chunk_overlap: int = 150
+
     @field_validator("s3_endpoint_url", "s3_access_key_id", "s3_secret_access_key", mode="before")
     @classmethod
     def _empty_to_none(cls, value: str | None) -> str | None:

@@ -145,7 +145,7 @@ rag-vector-engine/
 │   ├── consumer.py             # Consumes INGESTION_QUEUE, reports status to DOCUMENT_EVENTS_QUEUE (INDEXED for now; DLQ later)
 │   ├── extractor.py            # Routing by detected MIME + direct extraction to Markdown
 │   ├── ocr.py                  # LightOn OCR for images & scanned PDFs
-│   ├── chunker.py              # Markdown-aware structural splitter
+│   ├── chunker.py              # Simple paragraph-packing chunker (Markdown-aware splitting later)
 │   ├── embedder.py             # Batched text embedding
 │   └── publisher.py            # RabbitMQ document status publisher
 │
@@ -169,6 +169,7 @@ rag-vector-engine/
 │   └── workers/
 │       ├── sample_documents.py # Builds real PDF/DOCX/XLSX test files
 │       ├── test_extractor.py   # Extraction to Markdown per file type
+│       ├── test_chunker.py     # Chunk packing, overlap, and long-paragraph splitting
 │       └── test_consumer.py    # Worker integration tests (run against RabbitMQ)
 │
 ├── docker-compose.yml          # Local infra (currently MinIO + bucket init, Postgres, RabbitMQ)
@@ -312,7 +313,13 @@ For each job the worker reports `PROCESSING`, downloads the source file, extract
 | CSV | One Markdown table (delimiter sniffed) |
 | TXT | The text as is |
 
-It then reports `INDEXED` (a placeholder until chunking and embedding exist). Documents that can't be extracted are reported as `FAILED` with a `detail`: PDFs without a text layer (scanned; OCR is not available yet), password-protected or damaged files, files with no text, or a missing source file. Storage or RabbitMQ errors requeue the job instead:
+Next, `workers/chunker.py` splits the Markdown with a simple paragraph packer: blank-line separated paragraphs are packed into chunks of at most `CHUNK_SIZE` characters (default 1000), each chunk repeating up to `CHUNK_OVERLAP` characters (default 150) from the end of the previous one, starting on a word boundary. Only paragraphs longer than `CHUNK_SIZE` are split (at whitespace). Headers and tables get no special treatment yet. The chunks are stored as `{business_id}/{doc_id}/chunks.jsonl`, one JSON object per line, where `text` is `extracted.md[start:end]`:
+
+```json
+{"index": 0, "text": "## Page 1\n\nQuarterly revenue grew ...", "start": 0, "end": 918}
+```
+
+It then reports `INDEXED` (a placeholder until embedding exists). Documents that can't be extracted are reported as `FAILED` with a `detail`: PDFs without a text layer (scanned; OCR is not available yet), password-protected or damaged files, files with no text, or a missing source file. Storage or RabbitMQ errors requeue the job instead:
 
 ```json
 {
