@@ -42,8 +42,7 @@ def app_client(blob_storage: InMemoryBlobStorage) -> TestClient:
         yield test_client
 
 
-@pytest.fixture
-def business(client: TestClient) -> dict:
+def _register_business(client: TestClient) -> dict:
     response = client.post(
         "/v1/auth/register",
         json={"business_name": "Acme", "email": f"{uuid.uuid4().hex[:12]}@acme.com", "password": "s3cret-passw0rd"},
@@ -51,6 +50,11 @@ def business(client: TestClient) -> dict:
     assert response.status_code == 201
     data = response.json()
     return {"business_id": data["business_id"], "headers": {"Authorization": f"Bearer {data['access_token']}"}}
+
+
+@pytest.fixture
+def business(client: TestClient) -> dict:
+    return _register_business(client)
 
 
 def _documents_of(business_id: str) -> list[Document]:
@@ -197,6 +201,42 @@ def test_storage_failure_stores_nothing(client: TestClient, blob_storage: InMemo
     assert response.status_code == 502
     assert blob_storage.objects == {}
     assert _documents_of(business["business_id"]) == []
+
+
+def test_list_requires_token(app_client: TestClient):
+    assert app_client.get("/v1/documents").status_code == 401
+
+
+def test_list_is_empty_for_new_business(client: TestClient, business: dict):
+    response = client.get("/v1/documents", headers=business["headers"])
+    assert response.status_code == 200
+    assert response.json() == {"documents": []}
+
+
+def test_list_returns_own_documents_newest_first(
+    client: TestClient, blob_storage: InMemoryBlobStorage, business: dict
+):
+    other = _register_business(client)
+    first = client.post(URL, headers=business["headers"], files=_files(("first.txt", TXT_BYTES)))
+    client.post(URL, headers=other["headers"], files=_files(("theirs.txt", TXT_BYTES)))
+    second = client.post(URL, headers=business["headers"], files=_files(("second.csv", CSV_BYTES)))
+    assert first.status_code == second.status_code == 201
+
+    response = client.get("/v1/documents", headers=business["headers"])
+
+    assert response.status_code == 200
+    documents = response.json()["documents"]
+    assert [d["filename"] for d in documents] == ["second.csv", "first.txt"]
+    assert [d["doc_id"] for d in documents] == [
+        second.json()["documents"][0]["doc_id"],
+        first.json()["documents"][0]["doc_id"],
+    ]
+    newest = documents[0]
+    assert newest["status"] == "QUEUED"
+    assert newest["detected_mime"] == "text/csv"
+    assert newest["size_bytes"] == len(CSV_BYTES)
+    assert newest["created_at"] and newest["updated_at"]
+    assert "storage_key" not in newest
 
 
 def test_database_failure_removes_stored_objects(migrated_db: None, blob_storage: InMemoryBlobStorage, client):

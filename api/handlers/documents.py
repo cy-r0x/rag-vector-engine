@@ -2,12 +2,14 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid7
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
@@ -72,6 +74,44 @@ class DocumentOut(BaseModel):
 
 class UploadResponse(BaseModel):
     documents: list[DocumentOut]
+
+
+class DocumentSummary(BaseModel):
+    doc_id: UUID
+    filename: str
+    status: DocumentStatus
+    detected_mime: str
+    size_bytes: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class DocumentListResponse(BaseModel):
+    documents: list[DocumentSummary]
+
+
+async def list_documents(
+    business_id: UUID = Depends(get_business_id),
+    session: AsyncSession = Depends(get_session),
+) -> DocumentListResponse:
+    """The caller's documents, newest first (UUIDv7 ids are time-ordered)."""
+    rows = await session.scalars(
+        select(Document).where(Document.business_id == business_id).order_by(Document.id.desc())
+    )
+    return DocumentListResponse(
+        documents=[
+            DocumentSummary(
+                doc_id=doc.id,
+                filename=doc.filename,
+                status=doc.status,
+                detected_mime=doc.detected_mime,
+                size_bytes=doc.size_bytes,
+                created_at=doc.created_at,
+                updated_at=doc.updated_at,
+            )
+            for doc in rows
+        ]
+    )
 
 
 @dataclass(frozen=True)

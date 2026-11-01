@@ -17,7 +17,7 @@ Status: **done** = implemented and tested, **stub** = empty file reserved by the
 | `api/main.py` | FastAPI app: logging setup, JWT middleware, app-wide `require_auth`, router, `GET /health` | done |
 | `api/routes/routes.py` | Single router (`/v1`); maps paths to handlers via `add_api_route` | done |
 | `api/handlers/auth.py` | `register` (creates business + owner user, returns JWT; 409 on duplicate email) / `login` (401 on bad credentials) | done |
-| `api/handlers/documents.py` | `POST /v1/documents/upload`: ≤50 files (`files` field), PDF/DOCX/XLSX/CSV/TXT, all-or-nothing; stores in blob storage + `documents` row (`QUEUED`). No queue publish yet | done |
+| `api/handlers/documents.py` | `GET /v1/documents`: the caller's documents, newest first. `POST /v1/documents/upload`: ≤50 files (`files` field), PDF/DOCX/XLSX/CSV/TXT, all-or-nothing; stores in blob storage + `documents` row (`QUEUED`). No queue publish yet | done |
 | `api/middleware/auth.py` | `JWTAuthMiddleware` (decodes Bearer token → `request.state.token_payload`), `require_auth`, `get_token_payload`, `get_business_id` (claim → `UUID`, 401 if malformed) | done |
 | `api/middleware/request_logger.py` | One log line per request (method, path, status, duration) | done |
 | `api/middleware/rate_limit.py` | Redis token bucket | stub |

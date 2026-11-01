@@ -350,11 +350,15 @@ curl http://localhost:8000/v1/documents \
       "filename": "quarterly_report.pdf",
       "status": "INDEXED",
       "detected_mime": "application/pdf",
+      "size_bytes": 482113,
+      "created_at": "2026-10-29T11:40:51Z",
       "updated_at": "2026-10-29T11:42:07Z"
     }
   ]
 }
 ```
+
+Documents are scoped to the token's `business_id` and returned newest first.
 
 A single document can be fetched with `GET /v1/documents/{doc_id}`.
 
