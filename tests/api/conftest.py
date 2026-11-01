@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from api.main import app
 from db import get_session
+from db.models import IngestionJob
+from infra.queue import get_job_publisher
 from infra.storage.blob import ObjectInfo, ObjectNotFoundError, get_blob_storage
 
 DATABASE_URL = os.getenv("TEST_DATABASE_URL", "postgresql+asyncpg://rve:rve@localhost:5433/rve_test")
@@ -126,6 +128,31 @@ class InMemoryBlobStorage:
         for key in keys:
             del self.objects[key]
         return len(keys)
+
+
+class InMemoryJobPublisher:
+    def __init__(self) -> None:
+        self.jobs: list[IngestionJob] = []
+        self.fail = False
+
+    async def publish(self, jobs) -> None:
+        if self.fail:
+            raise ConnectionError("RabbitMQ unavailable")
+        self.jobs.extend(jobs)
+
+    async def close(self) -> None:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def job_publisher() -> Iterator[InMemoryJobPublisher]:
+    """Every API test gets an in-memory publisher, so none of them needs (or reaches) RabbitMQ."""
+    publisher = InMemoryJobPublisher()
+    app.dependency_overrides[get_job_publisher] = lambda: publisher
+    try:
+        yield publisher
+    finally:
+        app.dependency_overrides.pop(get_job_publisher, None)
 
 
 @pytest.fixture

@@ -11,6 +11,7 @@ from common.config import get_settings
 from common.decorators import public
 from common.logger import setup_logging
 from db import dispose_engine
+from infra.queue import close_job_publisher
 
 setup_logging(get_settings().log_level)
 
@@ -18,6 +19,7 @@ setup_logging(get_settings().log_level)
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     yield
+    await close_job_publisher()
     await dispose_engine()
 
 

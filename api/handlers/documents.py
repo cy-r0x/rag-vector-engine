@@ -9,7 +9,7 @@ from uuid import UUID, uuid7
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
@@ -28,7 +28,8 @@ from api.validators.file_type import (
 )
 from common.config import get_settings
 from db import get_session
-from db.models import Document, DocumentStatus
+from db.models import Document, DocumentStatus, IngestionJob
+from infra.queue import JobPublisher, get_job_publisher
 from infra.storage.blob import BlobStorage, get_blob_storage, object_key
 
 logger = logging.getLogger("api.documents")
@@ -126,6 +127,7 @@ async def upload_documents(
     business_id: UUID = Depends(get_business_id),
     session: AsyncSession = Depends(get_session),
     storage: BlobStorage = Depends(get_blob_storage),
+    publisher: JobPublisher = Depends(get_job_publisher),
 ) -> UploadResponse | JSONResponse:
     """Accept up to `max_upload_files` documents as multipart field `files`; all or nothing.
 
@@ -172,7 +174,17 @@ async def upload_documents(
         await _delete_quietly(storage, [doc.storage_key for doc in documents])
         raise
 
-    logger.info("Stored %d documents for business %s", len(documents), business_id)
+    try:
+        await publisher.publish([IngestionJob.from_document(doc) for doc in documents])
+    except Exception:
+        logger.exception("Failed to queue %d documents for business %s; discarding the batch", len(documents), business_id)
+        await _discard_batch(session, storage, documents)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Documents could not be queued for processing; nothing was stored. Please try again.",
+        ) from None
+
+    logger.info("Stored and queued %d documents for business %s", len(documents), business_id)
     return UploadResponse(documents=[_to_out(doc) for doc in documents])
 
 
@@ -255,6 +267,18 @@ async def _store_all(storage: BlobStorage, validated: list[_ValidatedFile], docu
         logger.error("Failed to store %d of %d documents", len(failures), len(documents), exc_info=failures[0])
         await _delete_quietly(storage, [doc.storage_key for doc in documents])
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Failed to store documents")
+
+
+async def _discard_batch(session: AsyncSession, storage: BlobStorage, documents: list[Document]) -> None:
+    """Undo a committed batch: its rows first, so no document is listed without a source file."""
+    try:
+        await session.execute(delete(Document).where(Document.id.in_([doc.id for doc in documents])))
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        logger.exception("Could not delete rows of discarded batch %s", [str(doc.id) for doc in documents])
+        return
+    await _delete_quietly(storage, [doc.storage_key for doc in documents])
 
 
 async def _delete_quietly(storage: BlobStorage, keys: list[str]) -> None:

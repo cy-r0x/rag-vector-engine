@@ -17,7 +17,7 @@ Status: **done** = implemented and tested, **stub** = empty file reserved by the
 | `api/main.py` | FastAPI app: logging setup, JWT middleware, app-wide `require_auth`, router, `GET /health` | done |
 | `api/routes/routes.py` | Single router (`/v1`); maps paths to handlers via `add_api_route` | done |
 | `api/handlers/auth.py` | `register` (creates business + owner user, returns JWT; 409 on duplicate email) / `login` (401 on bad credentials) | done |
-| `api/handlers/documents.py` | `GET /v1/documents`: the caller's documents, newest first. `POST /v1/documents/upload`: ≤50 files (`files` field), PDF/DOCX/XLSX/CSV/TXT, all-or-nothing; stores in blob storage + `documents` row (`QUEUED`). No queue publish yet | done |
+| `api/handlers/documents.py` | `GET /v1/documents`: the caller's documents, newest first. `POST /v1/documents/upload` (publishes one `IngestionJob` per document after the batch is stored; 503 + batch discarded if RabbitMQ doesn't confirm): ≤50 files (`files` field), PDF/DOCX/XLSX/CSV/TXT, all-or-nothing; stores in blob storage + `documents` row (`QUEUED`). No queue publish yet | done |
 | `api/middleware/auth.py` | `JWTAuthMiddleware` (decodes Bearer token → `request.state.token_payload`), `require_auth`, `get_token_payload`, `get_business_id` (claim → `UUID`, 401 if malformed) | done |
 | `api/middleware/request_logger.py` | One log line per request (method, path, status, duration) | done |
 | `api/middleware/rate_limit.py` | Redis token bucket | stub |
@@ -28,9 +28,9 @@ Status: **done** = implemented and tested, **stub** = empty file reserved by the
 | `common/decorators/` | `@public`, `is_public()` | done |
 | `db/postgres.py` | Async engine, `get_session` (FastAPI dependency), `dispose_engine` (app shutdown) | done |
 | `db/models/schema.py` | `Base`, `Business`, `User` (unique lowercased email, role), `Document` (`DocumentStatus`); all primary keys are native UUIDv7 | done |
-| `db/models/events.py` | RabbitMQ job & status payloads | stub |
+| `db/models/events.py` | `IngestionJob` (JSON payload published per uploaded document; `from_document()`); status payloads still to come | done |
 | `db/migrations/`, `alembic.ini` | Alembic (async); `env.py` uses `DATABASE_URL` unless `sqlalchemy.url` is set | done |
-| `infra/queue/` | RabbitMQ `connect` / `open_channel` / `declare_queue` | done |
+| `infra/queue/` | RabbitMQ `connect` / `open_channel` / `declare_queue`; `JobPublisher` / `RabbitJobPublisher` (confirmed, mandatory, persistent publishes; plain connection opened on demand), `get_job_publisher()` (FastAPI dependency, closed on shutdown) | done |
 | `infra/redis/` | Redis client | stub |
 | `infra/storage/blob.py` | `BlobStorage` + `S3BlobStorage` (MinIO now, AWS S3 via env), `object_key()` | done |
 | `infra/storage/vector_db.py` | Qdrant client with `business_id` pre-filter | stub |

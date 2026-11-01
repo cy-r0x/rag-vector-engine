@@ -127,11 +127,12 @@ rag-vector-engine/
 │   │   └── versions/           # Migration scripts
 │   └── models/
 │       ├── schema.py           # Relational schema (businesses, users, documents)
-│       └── events.py           # RabbitMQ job & status payloads
+│       └── events.py           # RabbitMQ payloads (IngestionJob; status events later)
 │
 ├── infra/                      # External service clients
 │   ├── queue/
-│   │   └── queue.py            # RabbitMQ connect / channel / standard queue declaration
+│   │   ├── queue.py            # RabbitMQ connect / channel / standard queue declaration
+│   │   └── publisher.py        # Ingestion job publisher used by the upload route
 │   ├── redis/
 │   │   └── redis.py            # Redis client
 │   └── storage/
@@ -159,6 +160,8 @@ rag-vector-engine/
 │   │   ├── test_passwords.py   # Password hashing tests
 │   │   └── test_tokens.py      # JWT encode/decode tests
 │   ├── infra/
+│   │   ├── queue/
+│   │   │   └── test_publisher.py # Job publisher tests (integration tests run against RabbitMQ)
 │   │   └── storage/
 │   │       └── test_blob.py    # Blob adapter tests (integration tests run against MinIO)
 │   └── workers/
@@ -276,7 +279,22 @@ export ACCESS_TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 ---
 
 ### 2. Ingest Business Documents
-Upload up to **50 files per request** (`MAX_UPLOAD_FILES`) as repeated multipart fields named `files`. Accepted types for now: **PDF, DOCX, XLSX, CSV, and TXT**; images are rejected on this route until OCR lands. Each file is stored in object storage under the caller's `business_id` (taken from the token) and recorded in PostgreSQL with status `QUEUED`. Publishing ingestion jobs to RabbitMQ is not wired up yet.
+Upload up to **50 files per request** (`MAX_UPLOAD_FILES`) as repeated multipart fields named `files`. Accepted types for now: **PDF, DOCX, XLSX, CSV, and TXT**; images are rejected on this route until OCR lands. Each file is stored in object storage under the caller's `business_id` (taken from the token) and recorded in PostgreSQL with status `QUEUED`. Once the whole batch is stored, one ingestion job per document is published to the `INGESTION_QUEUE` (`ingestion.jobs`) as a persistent JSON message, with publisher confirms; the worker uses its `storage_key` to fetch the file from object storage:
+
+```json
+{
+  "schema_version": 1,
+  "doc_id": "0192f6a5-1c2d-7e3f-a4b5-c6d7e8f90a1b",
+  "business_id": "0192f6a4-3b1e-7c2d-9a4f-5e8b1c2d3e4f",
+  "storage_key": "0192f6a4-3b1e-7c2d-9a4f-5e8b1c2d3e4f/0192f6a5-1c2d-7e3f-a4b5-c6d7e8f90a1b/source.pdf",
+  "detected_mime": "application/pdf",
+  "filename": "quarterly_report.pdf",
+  "size_bytes": 482113,
+  "uploaded_at": "2026-10-29T11:40:51.120000Z"
+}
+```
+
+The message's `message_id` is the `doc_id` and its `type` is `ingestion.job`. Retries and a dead-letter queue are not set up yet.
 
 ```bash
 curl -X POST http://localhost:8000/v1/documents/upload \
@@ -329,7 +347,7 @@ Other limits, checked before the request body is read:
 | More than `MAX_UPLOAD_FILES` files | `400` |
 | No `files` parts, or a `files` part that isn't a file | `422` |
 
-If storage fails partway through, objects already written for the batch are deleted and the response is `502`.
+If storage fails partway through, objects already written for the batch are deleted and the response is `502`. If RabbitMQ does not confirm every job (for example, it is down), the batch's rows and objects are deleted and the response is `503`, so a stored document always has a queued job.
 
 ---
 

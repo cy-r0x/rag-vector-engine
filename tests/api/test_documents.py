@@ -9,7 +9,7 @@ from api.main import app
 from common.auth import get_jwt_codec
 from common.config import get_settings
 from db.models import Document, DocumentStatus
-from tests.api.conftest import InMemoryBlobStorage, run_db
+from tests.api.conftest import InMemoryBlobStorage, InMemoryJobPublisher, run_db
 from tests.api.test_file_type import DOCX_BYTES, PDF_BYTES, PNG_BYTES, XLSX_BYTES
 
 URL = "/v1/documents/upload"
@@ -199,6 +199,47 @@ def test_storage_failure_stores_nothing(client: TestClient, blob_storage: InMemo
     response = client.post(URL, headers=business["headers"], files=files)
 
     assert response.status_code == 502
+    assert blob_storage.objects == {}
+    assert _documents_of(business["business_id"]) == []
+
+
+def test_upload_queues_one_job_per_document(
+    client: TestClient, blob_storage: InMemoryBlobStorage, job_publisher: InMemoryJobPublisher, business: dict
+):
+    response = client.post(
+        URL, headers=business["headers"], files=_files(("report.pdf", PDF_BYTES), ("notes.txt", TXT_BYTES))
+    )
+
+    assert response.status_code == 201, response.text
+    documents = response.json()["documents"]
+    assert len(job_publisher.jobs) == len(documents) == 2
+    for job, doc in zip(job_publisher.jobs, documents, strict=True):
+        assert str(job.doc_id) == doc["doc_id"]
+        assert str(job.business_id) == business["business_id"]
+        assert job.storage_key == doc["storage_key"]
+        assert job.storage_key in blob_storage.objects
+        assert job.detected_mime == doc["detected_mime"]
+        assert job.filename == doc["filename"]
+        assert job.size_bytes == doc["size_bytes"]
+        assert job.uploaded_at is not None
+
+
+def test_rejected_upload_queues_nothing(app_client: TestClient, job_publisher: InMemoryJobPublisher):
+    response = app_client.post(URL, headers=_auth(), files=_files(("photo.png", PNG_BYTES)))
+    assert response.status_code == 415
+    assert job_publisher.jobs == []
+
+
+def test_queue_failure_discards_the_batch(
+    client: TestClient, blob_storage: InMemoryBlobStorage, job_publisher: InMemoryJobPublisher, business: dict
+):
+    job_publisher.fail = True
+    response = client.post(
+        URL, headers=business["headers"], files=_files(("report.pdf", PDF_BYTES), ("notes.txt", TXT_BYTES))
+    )
+
+    assert response.status_code == 503
+    assert "nothing was stored" in response.json()["detail"]
     assert blob_storage.objects == {}
     assert _documents_of(business["business_id"]) == []
 
