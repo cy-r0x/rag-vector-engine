@@ -152,7 +152,7 @@ rag-vector-engine/
 │       └── vector_db.py        # VectorStore protocol + Qdrant store (mandatory business_id pre-filter)
 │
 ├── workers/                    # Ingestion pipeline worker
-│   ├── consumer.py             # Consumes INGESTION_QUEUE, reports status to DOCUMENT_EVENTS_QUEUE (INDEXED for now; DLQ later)
+│   ├── consumer.py             # Consumes INGESTION_QUEUE: extract → chunk → embed → index; reports status to DOCUMENT_EVENTS_QUEUE (DLQ later)
 │   ├── extractor.py            # Routing by detected MIME + direct extraction to Markdown
 │   ├── ocr.py                  # LightOn OCR for images & scanned PDFs
 │   ├── chunker.py              # Simple paragraph-packing chunker (Markdown-aware splitting later)
