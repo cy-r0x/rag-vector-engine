@@ -1,6 +1,8 @@
 import csv
 import io
+import re
 import zipfile
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import PurePath
 
@@ -15,9 +17,19 @@ TIFF = "image/tiff"
 DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 CSV = "text/csv"
+TXT = "text/plain"
 ZIP = "application/zip"
 
-CANONICAL_EXTENSION = {PDF: "pdf", PNG: "png", JPEG: "jpg", TIFF: "tiff", DOCX: "docx", XLSX: "xlsx", CSV: "csv"}
+CANONICAL_EXTENSION = {
+    PDF: "pdf",
+    PNG: "png",
+    JPEG: "jpg",
+    TIFF: "tiff",
+    DOCX: "docx",
+    XLSX: "xlsx",
+    CSV: "csv",
+    TXT: "txt",
+}
 ACCEPTED_EXTENSIONS = {
     PDF: {"pdf"},
     PNG: {"png"},
@@ -26,6 +38,7 @@ ACCEPTED_EXTENSIONS = {
     DOCX: {"docx"},
     XLSX: {"xlsx"},
     CSV: {"csv"},
+    TXT: {"txt"},
 }
 IMAGE_MIMES = frozenset({PNG, JPEG, TIFF})
 
@@ -35,6 +48,7 @@ _MAX_ZIP_ENTRIES = 10_000
 _CSV_SAMPLE_BYTES = 64 * 1024
 _CSV_SAMPLE_ROWS = 20
 _CSV_DELIMITERS = ",;\t|"
+_DISALLOWED_TEXT_CHARS = re.compile(r"[\x00-\x08\x0b\x0e-\x1f\x7f]")
 
 
 class FileValidationError(Exception):
@@ -73,11 +87,14 @@ def detect_file_type(
     filename: str | None = None,
     max_size: int | None = None,
     max_uncompressed_size: int | None = None,
+    allowed: Collection[str] | None = None,
 ) -> FileMetadata:
     """Identify an upload from its bytes and check it against the allowlist.
 
     The client's Content-Type is never consulted. `filename` is only used to reject
-    uploads whose extension contradicts the detected type.
+    uploads whose extension contradicts the detected type, and to tell plain text
+    from CSV (delimited text named `.txt` is plain text). `allowed` narrows the
+    allowlist to a subset of MIME types.
     """
     settings = get_settings()
     max_size = settings.max_upload_bytes if max_size is None else max_size
@@ -91,7 +108,11 @@ def detect_file_type(
         raise UnsupportedFileTypeError("Empty file")
 
     mime = _sniff(data, max_uncompressed_size)
+    if mime == CSV and _suffix(filename) == "txt":
+        mime = TXT
     _check_extension(filename, mime)
+    if allowed is not None and mime not in allowed:
+        raise UnsupportedFileTypeError("File type is not allowed here", detected_mime=mime)
     return FileMetadata(mime=mime, extension=CANONICAL_EXTENSION[mime], size=len(data))
 
 
@@ -100,6 +121,8 @@ def _sniff(data: bytes, max_uncompressed_size: int) -> str:
     if kind is None:
         if _looks_like_csv(data):
             return CSV
+        if _looks_like_text(data):
+            return TXT
         raise UnsupportedFileTypeError("Unsupported or mismatched file type")
     if kind.mime in _SIMPLE_TYPES:
         return kind.mime
@@ -154,10 +177,21 @@ def _looks_like_csv(data: bytes) -> bool:
     return len(widths) == 1 and widths.pop() >= 2
 
 
+def _looks_like_text(data: bytes) -> bool:
+    """UTF-8 (optionally with BOM) without NULs or control characters other than tab, newlines and form feed."""
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return False
+    return _DISALLOWED_TEXT_CHARS.search(text) is None
+
+
+def _suffix(filename: str | None) -> str:
+    return PurePath(filename).suffix.lower().lstrip(".") if filename else ""
+
+
 def _check_extension(filename: str | None, mime: str) -> None:
-    if not filename:
-        return
-    suffix = PurePath(filename).suffix.lower().lstrip(".")
+    suffix = _suffix(filename)
     if suffix and suffix not in ACCEPTED_EXTENSIONS[mime]:
         raise FileTypeMismatchError(
             f"File extension '.{suffix}' does not match the detected type", detected_mime=mime

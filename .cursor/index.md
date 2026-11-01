@@ -17,16 +17,17 @@ Status: **done** = implemented and tested, **stub** = empty file reserved by the
 | `api/main.py` | FastAPI app: logging setup, JWT middleware, app-wide `require_auth`, router, `GET /health` | done |
 | `api/routes/routes.py` | Single router (`/v1`); maps paths to handlers via `add_api_route` | done |
 | `api/handlers/auth.py` | `register` (creates business + owner user, returns JWT; 409 on duplicate email) / `login` (401 on bad credentials) | done |
+| `api/handlers/documents.py` | `POST /v1/documents/upload`: ≤50 files (`files` field), PDF/DOCX/XLSX/CSV/TXT, all-or-nothing; stores in blob storage + `documents` row (`QUEUED`). No queue publish yet | done |
 | `api/middleware/auth.py` | `JWTAuthMiddleware` (decodes Bearer token → `request.state.token_payload`), `require_auth`, `get_token_payload` | done |
 | `api/middleware/request_logger.py` | One log line per request (method, path, status, duration) | done |
 | `api/middleware/rate_limit.py` | Redis token bucket | stub |
-| `api/validators/file_type.py` | `detect_file_type`: magic-byte upload validation (`filetype` + own ZIP/CSV checks) | done |
+| `api/validators/file_type.py` | `detect_file_type`: magic-byte upload validation (`filetype` + own ZIP/CSV/TXT checks); `allowed=` narrows the allowlist per route | done |
 | `common/config/` | `Settings` / `get_settings()` (pydantic-settings, reads `.env`) | done |
 | `common/logger/` | `setup_logging()` (format, `LOG_LEVEL`, disables uvicorn access log) | done |
 | `common/auth/` | `JWTCodec` (HS256 encode/decode), `get_jwt_codec()`; `PasswordHasher` (Argon2id), `get_password_hasher()` | done |
 | `common/decorators/` | `@public`, `is_public()` | done |
 | `db/postgres.py` | Async engine, `get_session` (FastAPI dependency), `dispose_engine` (app shutdown) | done |
-| `db/models/schema.py` | `Base`, `Business` (`biz_…`), `User` (`usr_…`, unique lowercased email, role) | done |
+| `db/models/schema.py` | `Base`, `Business` (`biz_…`), `User` (`usr_…`, unique lowercased email, role), `Document` (`doc_…`, `DocumentStatus`) | done |
 | `db/models/events.py` | RabbitMQ job & status payloads | stub |
 | `db/migrations/`, `alembic.ini` | Alembic (async); `env.py` uses `DATABASE_URL` unless `sqlalchemy.url` is set | done |
 | `infra/queue/` | RabbitMQ `connect` / `open_channel` / `declare_queue` | done |
@@ -35,7 +36,7 @@ Status: **done** = implemented and tested, **stub** = empty file reserved by the
 | `infra/storage/vector_db.py` | Qdrant client with `business_id` pre-filter | stub |
 | `workers/consumer.py` | Consumes `INGESTION_QUEUE`; logs + acks (no DLQ yet) | done |
 | `workers/{extractor,ocr,chunker,embedder,publisher}.py` | Ingestion pipeline steps | stub |
-| `tests/` | Mirrors the source tree; MinIO/Postgres/RabbitMQ tests skip if the service is down (Postgres tests use the `rve_test` DB) | done |
+| `tests/` | Mirrors the source tree; MinIO/Postgres/RabbitMQ tests skip if the service is down (Postgres tests use the `rve_test` DB via the `migrated_db`/`client` fixtures in `tests/api/conftest.py`; `blob_storage` fixture swaps in an in-memory store) | done |
 
 ## Conventions
 

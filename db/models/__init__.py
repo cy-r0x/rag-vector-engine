@@ -1,3 +1,3 @@
-from db.models.schema import Base, Business, User, new_id
+from db.models.schema import Base, Business, Document, DocumentStatus, User, new_id
 
-__all__ = ["Base", "Business", "User", "new_id"]
+__all__ = ["Base", "Business", "Document", "DocumentStatus", "User", "new_id"]

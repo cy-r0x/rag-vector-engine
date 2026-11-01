@@ -24,6 +24,8 @@ class Settings(BaseSettings):
 
     max_upload_bytes: int = 25 * 1024 * 1024
     max_uncompressed_bytes: int = 200 * 1024 * 1024
+    max_upload_files: int = 50
+    max_batch_bytes: int = 200 * 1024 * 1024
 
     rabbitmq_url: str = "amqp://rve:rve@localhost:5672/"
     ingestion_queue: str = "ingestion.jobs"

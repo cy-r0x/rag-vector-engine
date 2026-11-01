@@ -101,7 +101,8 @@ rag-vector-engine/
 │   ├── routes/
 │   │   └── routes.py           # All routes: onboarding, documents, WebSocket chat (split later if needed)
 │   ├── handlers/               # Business logic called by routes (routes stay thin)
-│   │   └── auth.py             # register / login
+│   │   ├── auth.py             # register / login
+│   │   └── documents.py        # Batch document upload (validate, store, record)
 │   ├── validators/
 │   │   └── file_type.py        # Byte-level MIME sniffing & allowlist
 │   └── middleware/
@@ -125,7 +126,7 @@ rag-vector-engine/
 │   ├── migrations/             # Alembic (env.py reads DATABASE_URL)
 │   │   └── versions/           # Migration scripts
 │   └── models/
-│       ├── schema.py           # Relational schema (businesses, users)
+│       ├── schema.py           # Relational schema (businesses, users, documents)
 │       └── events.py           # RabbitMQ job & status payloads
 │
 ├── infra/                      # External service clients
@@ -148,7 +149,9 @@ rag-vector-engine/
 ├── tests/                      # pytest suite
 │   ├── conftest.py             # Test env (JWT_SECRET)
 │   ├── api/
+│   │   ├── conftest.py         # Postgres test DB + in-memory blob storage fixtures
 │   │   ├── test_auth.py        # JWT middleware tests
+│   │   ├── test_documents.py   # Document upload tests
 │   │   ├── test_file_type.py   # Magic-byte upload validation tests
 │   │   ├── test_main.py        # FastAPI app smoke test
 │   │   └── test_onboarding.py  # Register / login (integration tests run against Postgres)
@@ -273,34 +276,60 @@ export ACCESS_TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 ---
 
 ### 2. Ingest Business Documents
-Upload PDF, DOCX, Excel, CSV, or image files into the tenant's isolated ingestion pipeline. Text-based files are extracted directly; images and scanned PDFs go through LightOn OCR.
+Upload up to **50 files per request** (`MAX_UPLOAD_FILES`) as repeated multipart fields named `files`. Accepted types for now: **PDF, DOCX, XLSX, CSV, and TXT**; images are rejected on this route until OCR lands. Each file is stored in object storage under the caller's `business_id` (taken from the token) and recorded in PostgreSQL with status `QUEUED`. Publishing ingestion jobs to RabbitMQ is not wired up yet.
 
 ```bash
 curl -X POST http://localhost:8000/v1/documents/upload \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -F "file=@quarterly_report.pdf"
+  -F "files=@quarterly_report.pdf" \
+  -F "files=@pricing.xlsx" \
+  -F "files=@notes.txt"
 ```
 
-**Response:**
+**Response (`201 Created`):**
 ```json
 {
-  "doc_id": "doc_e4c3a102",
-  "status": "QUEUED",
-  "filename": "quarterly_report.pdf",
-  "detected_mime": "application/pdf",
-  "minio_key": "biz_98a72b1c/doc_e4c3a102/source.pdf"
+  "documents": [
+    {
+      "doc_id": "doc_6d3e795688319f3c",
+      "filename": "quarterly_report.pdf",
+      "status": "QUEUED",
+      "detected_mime": "application/pdf",
+      "size_bytes": 482113,
+      "storage_key": "biz_97a43df0277ef680/doc_6d3e795688319f3c/source.pdf"
+    }
+  ]
 }
 ```
 
-If the file's bytes don't match an allowed type (for example, an `.exe` renamed to `report.pdf`), the upload is rejected before it is stored or queued:
+Uploads are **all or nothing**: if any file's bytes don't match an allowed type (for example, an `.exe` renamed to `report.pdf`) or a file is too large, nothing in the batch is stored and every rejected file is listed. The status is `413` if every rejection is for size, otherwise `415`:
 
 **Response (`415 Unsupported Media Type`):**
 ```json
 {
-  "detail": "Unsupported or mismatched file type",
-  "detected_mime": "application/x-dosexec"
+  "detail": "1 of 2 files were rejected; nothing was stored",
+  "errors": [
+    {
+      "index": 1,
+      "filename": "report.pdf",
+      "detail": "Unsupported or mismatched file type",
+      "detected_mime": "application/x-msdownload"
+    }
+  ]
 }
 ```
+
+Other limits, checked before the request body is read:
+
+| Condition | Status |
+|-----------|--------|
+| Missing or invalid token | `401` |
+| No `Content-Length` header | `411` |
+| Request body larger than `MAX_BATCH_BYTES` (default 200 MiB) | `413` |
+| More than `MAX_UPLOAD_FILES` files | `400` |
+| No `files` parts, or a `files` part that isn't a file | `422` |
+
+If storage fails partway through, objects already written for the batch are deleted and the response is `502`.
 
 ---
 
@@ -426,6 +455,9 @@ Uploaded documents are treated as untrusted input. The client-supplied `Content-
 | DOCX | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | ZIP header `50 4B 03 04` **and** archive contains `word/document.xml` |
 | XLSX | `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` | ZIP header `50 4B 03 04` **and** archive contains `xl/workbook.xml` |
 | CSV | `text/csv` | No magic bytes: must decode as UTF-8, contain no NUL bytes, and parse as delimited rows (`,` `;` tab or `\|`) with a consistent column count of at least 2 |
+| TXT | `text/plain` | No magic bytes: must decode as UTF-8 (BOM allowed) with no control characters other than tab, newlines, and form feed. Delimited text named `.txt` is treated as TXT, not CSV |
+
+The upload route narrows this allowlist with `detect_file_type(..., allowed=...)`; `POST /v1/documents/upload` currently accepts PDF, DOCX, XLSX, CSV, and TXT.
 
 Validation rules:
 

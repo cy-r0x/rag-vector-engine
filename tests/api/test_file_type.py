@@ -10,6 +10,7 @@ from api.validators.file_type import (
     PDF,
     PNG,
     TIFF,
+    TXT,
     XLSX,
     FileTooLargeError,
     FileTypeMismatchError,
@@ -126,14 +127,43 @@ def test_csv_variants_are_accepted(data: bytes):
     "data",
     [
         b"just some plain text without structure",
+        b"\xef\xbb\xbfMeeting notes\n\n- revenue up\t12%\r\n- caf\xc3\xa9 opened\n\x0cpage two\n",
+    ],
+)
+def test_plain_utf8_text_is_txt(data: bytes):
+    meta = detect_file_type(data, filename="notes.txt")
+    assert meta.mime == TXT
+    assert meta.extension == "txt"
+
+
+def test_delimited_text_named_txt_is_txt():
+    assert detect_file_type(b"name,amount\nacme,100\n", filename="export.txt").mime == TXT
+
+
+def test_prose_named_csv_is_rejected():
+    with pytest.raises(FileTypeMismatchError):
+        detect_file_type(b"just some plain text without structure", filename="data.csv")
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
         b"name,amount\nacme,100\x00\n",
         b"name,amount\n\xff\xfe\xfa,100\n",
         b"\x01\x02\x03\x04\x05\x06\x07\x08",
+        b"looks like text\x1b[31m but has escapes",
     ],
 )
-def test_non_csv_text_and_binary_are_rejected(data: bytes):
+def test_binary_and_non_utf8_text_are_rejected(data: bytes):
     with pytest.raises(UnsupportedFileTypeError):
         detect_file_type(data)
+
+
+def test_allowed_narrows_the_allowlist():
+    assert detect_file_type(PDF_BYTES, allowed={PDF, TXT}).mime == PDF
+    with pytest.raises(UnsupportedFileTypeError) as exc_info:
+        detect_file_type(PNG_BYTES, allowed={PDF, TXT})
+    assert exc_info.value.detected_mime == PNG
 
 
 def test_large_csv_is_sampled():
