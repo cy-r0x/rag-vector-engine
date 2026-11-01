@@ -247,8 +247,8 @@ curl -X POST http://localhost:8000/v1/auth/register \
 **Response (`201 Created`):**
 ```json
 {
-  "business_id": "biz_9b4fdb17beb83573",
-  "user_id": "usr_4ab0ce2bebc31937",
+  "business_id": "0192f6a4-3b1e-7c2d-9a4f-5e8b1c2d3e4f",
+  "user_id": "0192f6a4-3b1f-7a10-8b2c-6d7e8f901a2b",
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "token_type": "bearer",
   "expires_in": 3600
@@ -291,12 +291,12 @@ curl -X POST http://localhost:8000/v1/documents/upload \
 {
   "documents": [
     {
-      "doc_id": "doc_6d3e795688319f3c",
+      "doc_id": "0192f6a5-1c2d-7e3f-a4b5-c6d7e8f90a1b",
       "filename": "quarterly_report.pdf",
       "status": "QUEUED",
       "detected_mime": "application/pdf",
       "size_bytes": 482113,
-      "storage_key": "biz_97a43df0277ef680/doc_6d3e795688319f3c/source.pdf"
+      "storage_key": "0192f6a4-3b1e-7c2d-9a4f-5e8b1c2d3e4f/0192f6a5-1c2d-7e3f-a4b5-c6d7e8f90a1b/source.pdf"
     }
   ]
 }
@@ -346,7 +346,7 @@ curl http://localhost:8000/v1/documents \
 {
   "documents": [
     {
-      "doc_id": "doc_e4c3a102",
+      "doc_id": "0192f6a5-1c2d-7e3f-a4b5-c6d7e8f90a1b",
       "filename": "quarterly_report.pdf",
       "status": "INDEXED",
       "detected_mime": "application/pdf",
@@ -364,7 +364,7 @@ A single document can be fetched with `GET /v1/documents/{doc_id}`.
 Removes the document's vectors from Qdrant (filtered by `business_id` **and** `doc_id`), its objects under `{business_id}/{doc_id}/` in MinIO, and its PostgreSQL record.
 
 ```bash
-curl -X DELETE http://localhost:8000/v1/documents/doc_e4c3a102 \
+curl -X DELETE http://localhost:8000/v1/documents/0192f6a5-1c2d-7e3f-a4b5-c6d7e8f90a1b \
   -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
@@ -376,14 +376,14 @@ curl -X DELETE http://localhost:8000/v1/documents/doc_e4c3a102 \
 Deletes the document's existing vectors and re-queues an ingestion job from the stored source file. The status goes back to `QUEUED`.
 
 ```bash
-curl -X POST http://localhost:8000/v1/documents/doc_e4c3a102/reindex \
+curl -X POST http://localhost:8000/v1/documents/0192f6a5-1c2d-7e3f-a4b5-c6d7e8f90a1b/reindex \
   -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
 **Response:**
 ```json
 {
-  "doc_id": "doc_e4c3a102",
+  "doc_id": "0192f6a5-1c2d-7e3f-a4b5-c6d7e8f90a1b",
   "status": "QUEUED"
 }
 ```
@@ -396,7 +396,7 @@ Deleting or re-indexing a document that is currently `QUEUED` or `PROCESSING` re
 Connect client applications to the real-time inference gateway. Browsers can't set headers on WebSocket connections, so the JWT is passed as the `token` query parameter and verified by the WebSocket route itself. The server closes the connection if the token's `business_id` claim doesn't match the `{business_id}` in the path.
 
 ```javascript
-const businessId = "biz_98a72b1c";
+const businessId = "0192f6a4-3b1e-7c2d-9a4f-5e8b1c2d3e4f";
 const accessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...";
 
 const socket = new WebSocket(`ws://localhost:8000/v1/chat/ws/${businessId}?token=${accessToken}`);

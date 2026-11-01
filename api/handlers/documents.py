@@ -3,6 +3,7 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any
+from uuid import UUID, uuid7
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -11,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
-from api.middleware.auth import get_token_payload
+from api.middleware.auth import get_business_id
 from api.validators.file_type import (
     CSV,
     DOCX,
@@ -25,7 +26,7 @@ from api.validators.file_type import (
 )
 from common.config import get_settings
 from db import get_session
-from db.models import Document, DocumentStatus, new_id
+from db.models import Document, DocumentStatus
 from infra.storage.blob import BlobStorage, get_blob_storage, object_key
 
 logger = logging.getLogger("api.documents")
@@ -61,7 +62,7 @@ UPLOAD_OPENAPI: dict[str, Any] = {
 
 
 class DocumentOut(BaseModel):
-    doc_id: str
+    doc_id: UUID
     filename: str
     status: DocumentStatus
     detected_mime: str
@@ -82,7 +83,7 @@ class _ValidatedFile:
 
 async def upload_documents(
     request: Request,
-    token: dict[str, Any] = Depends(get_token_payload),
+    business_id: UUID = Depends(get_business_id),
     session: AsyncSession = Depends(get_session),
     storage: BlobStorage = Depends(get_blob_storage),
 ) -> UploadResponse | JSONResponse:
@@ -120,7 +121,6 @@ async def upload_documents(
                 },
             )
 
-        business_id = token["business_id"]
         documents = [_new_document(business_id, item) for item in validated]
         await _store_all(storage, validated, documents)
 
@@ -186,15 +186,15 @@ def _clean_filename(raw: str | None) -> str:
     return name[:_MAX_FILENAME_CHARS] or "untitled"
 
 
-def _new_document(business_id: str, item: _ValidatedFile) -> Document:
-    doc_id = new_id("doc")
+def _new_document(business_id: UUID, item: _ValidatedFile) -> Document:
+    doc_id = uuid7()
     return Document(
         id=doc_id,
         business_id=business_id,
         filename=item.filename,
         detected_mime=item.meta.mime,
         size_bytes=item.meta.size,
-        storage_key=object_key(business_id, doc_id, item.meta.extension),
+        storage_key=object_key(str(business_id), str(doc_id), item.meta.extension),
         status=DocumentStatus.QUEUED,
     )
 

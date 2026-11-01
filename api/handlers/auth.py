@@ -1,4 +1,5 @@
 from typing import Annotated, Literal
+from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field, StringConstraints
@@ -29,8 +30,8 @@ class LoginRequest(BaseModel):
 
 
 class TokenResponse(BaseModel):
-    business_id: str
-    user_id: str
+    business_id: UUID
+    user_id: UUID
     access_token: str
     token_type: Literal["bearer"] = "bearer"
     expires_in: int
@@ -72,7 +73,7 @@ def _issue_token(user: User) -> TokenResponse:
     return TokenResponse(
         business_id=user.business_id,
         user_id=user.id,
-        access_token=codec.encode(sub=user.id, business_id=user.business_id),
+        access_token=codec.encode(sub=str(user.id), business_id=str(user.business_id)),
         expires_in=codec.expires_in,
     )
 

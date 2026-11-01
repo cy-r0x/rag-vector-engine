@@ -40,8 +40,8 @@ def test_register_rejects_invalid_body(body: dict):
 def test_register_creates_business_and_returns_token(client: TestClient):
     data = _register(client, _email())
 
-    assert data["business_id"].startswith("biz_")
-    assert data["user_id"].startswith("usr_")
+    assert uuid.UUID(data["business_id"]).version == 7
+    assert uuid.UUID(data["user_id"]).version == 7
     assert data["token_type"] == "bearer"
     assert data["expires_in"] == get_jwt_codec().expires_in
     claims = get_jwt_codec().decode(data["access_token"])
@@ -53,9 +53,9 @@ def test_register_stores_owner_with_hashed_password(client: TestClient):
     email = _email()
     data = _register(client, email, password="s3cret-passw0rd")
 
-    user = run_db(lambda session: session.scalar(select(User).where(User.id == data["user_id"])))
+    user = run_db(lambda session: session.scalar(select(User).where(User.id == uuid.UUID(data["user_id"]))))
     assert user.email == email
-    assert user.business_id == data["business_id"]
+    assert str(user.business_id) == data["business_id"]
     assert user.role == "owner"
     assert user.password_hash.startswith("$argon2id$")
     assert "s3cret-passw0rd" not in user.password_hash

@@ -25,8 +25,9 @@ ONE_OF_EACH = [
 ]
 
 
-def _auth(business_id: str = "biz_test0000") -> dict[str, str]:
-    return {"Authorization": f"Bearer {get_jwt_codec().encode(sub='usr_test0000', business_id=business_id)}"}
+def _auth(business_id: str | None = None) -> dict[str, str]:
+    token = get_jwt_codec().encode(sub=str(uuid.uuid7()), business_id=business_id or str(uuid.uuid7()))
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _files(*items: tuple[str, bytes]) -> list[tuple[str, tuple[str, bytes, str]]]:
@@ -54,13 +55,19 @@ def business(client: TestClient) -> dict:
 
 def _documents_of(business_id: str) -> list[Document]:
     async def fetch(session):
-        return list(await session.scalars(select(Document).where(Document.business_id == business_id)))
+        return list(await session.scalars(select(Document).where(Document.business_id == uuid.UUID(business_id))))
 
     return run_db(fetch)
 
 
 def test_requires_token(app_client: TestClient):
     assert app_client.post(URL, files=_files(("a.pdf", PDF_BYTES))).status_code == 401
+
+
+def test_rejects_token_with_non_uuid_business_id(app_client: TestClient):
+    response = app_client.post(URL, headers=_auth("biz_legacy"), files=_files(("a.pdf", PDF_BYTES)))
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid token"
 
 
 def test_requires_content_length(app_client: TestClient):
@@ -128,13 +135,14 @@ def test_uploads_each_allowed_type(client: TestClient, blob_storage: InMemoryBlo
     assert [d["filename"] for d in documents] == [name for name, _, _ in ONE_OF_EACH]
     assert [d["detected_mime"] for d in documents] == [mime for _, _, mime in ONE_OF_EACH]
     for doc, (name, data, mime) in zip(documents, ONE_OF_EACH, strict=True):
+        assert uuid.UUID(doc["doc_id"]).version == 7
         assert doc["status"] == "QUEUED"
         assert doc["size_bytes"] == len(data)
         ext = name.rsplit(".", 1)[1]
         assert doc["storage_key"] == f"{business_id}/{doc['doc_id']}/source.{ext}"
         assert blob_storage.objects[doc["storage_key"]] == (data, mime)
 
-    rows = {row.id: row for row in _documents_of(business_id)}
+    rows = {str(row.id): row for row in _documents_of(business_id)}
     assert set(rows) == {d["doc_id"] for d in documents}
     assert all(row.status is DocumentStatus.QUEUED for row in rows.values())
 
@@ -154,7 +162,7 @@ def test_business_comes_from_token_and_filename_is_sanitized(
     response = client.post(
         URL,
         headers=business["headers"],
-        data={"business_id": "biz_someoneelse"},
+        data={"business_id": str(uuid.uuid7())},
         files=_files(("..\\..\\etc/passwd.txt", TXT_BYTES)),
     )
     assert response.status_code == 201
@@ -194,6 +202,6 @@ def test_storage_failure_stores_nothing(client: TestClient, blob_storage: InMemo
 def test_database_failure_removes_stored_objects(migrated_db: None, blob_storage: InMemoryBlobStorage, client):
     # A token for a business that doesn't exist violates the documents → businesses foreign key.
     with TestClient(app, raise_server_exceptions=False) as test_client:
-        response = test_client.post(URL, headers=_auth("biz_doesnotexist"), files=_files(("a.txt", TXT_BYTES)))
+        response = test_client.post(URL, headers=_auth(), files=_files(("a.txt", TXT_BYTES)))
     assert response.status_code == 500
     assert blob_storage.objects == {}

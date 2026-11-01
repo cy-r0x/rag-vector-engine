@@ -1,8 +1,8 @@
-import secrets
 from datetime import datetime
 from enum import StrEnum
+from uuid import UUID, uuid7
 
-from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, MetaData, String, func
+from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, MetaData, String, Uuid, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 _NAMING_CONVENTION = {
@@ -14,10 +14,6 @@ _NAMING_CONVENTION = {
 }
 
 
-def new_id(prefix: str) -> str:
-    return f"{prefix}_{secrets.token_hex(8)}"
-
-
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=_NAMING_CONVENTION)
 
@@ -25,7 +21,7 @@ class Base(DeclarativeBase):
 class Business(Base):
     __tablename__ = "businesses"
 
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("biz"))
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
     name: Mapped[str] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -35,8 +31,8 @@ class Business(Base):
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("usr"))
-    business_id: Mapped[str] = mapped_column(ForeignKey("businesses.id", ondelete="CASCADE"), index=True)
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    business_id: Mapped[UUID] = mapped_column(ForeignKey("businesses.id", ondelete="CASCADE"), index=True)
     email: Mapped[str] = mapped_column(String(320), unique=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(32), default="owner")
@@ -55,8 +51,8 @@ class DocumentStatus(StrEnum):
 class Document(Base):
     __tablename__ = "documents"
 
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("doc"))
-    business_id: Mapped[str] = mapped_column(ForeignKey("businesses.id", ondelete="CASCADE"), index=True)
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    business_id: Mapped[UUID] = mapped_column(ForeignKey("businesses.id", ondelete="CASCADE"), index=True)
     filename: Mapped[str] = mapped_column(String(255))
     detected_mime: Mapped[str] = mapped_column(String(127))
     size_bytes: Mapped[int] = mapped_column(BigInteger)

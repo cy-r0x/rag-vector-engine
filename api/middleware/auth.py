@@ -1,7 +1,8 @@
 import logging
 from typing import Any
+from uuid import UUID
 
-from fastapi import HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -63,6 +64,18 @@ def get_token_payload(request: Request) -> dict[str, Any]:
             headers={"WWW-Authenticate": "Bearer"},
         )
     return payload
+
+
+def get_business_id(payload: dict[str, Any] = Depends(get_token_payload)) -> UUID:
+    """The tenant of the authenticated request, parsed from the token's `business_id` claim."""
+    try:
+        return UUID(payload["business_id"])
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from None
 
 
 def _bearer_token(authorization: str | None) -> str | None:
