@@ -12,8 +12,11 @@ Last updated: 2026-11-01.
 4. Document list with statuses, Markdown viewer per indexed document.
 5. Chat page: per-business WebSocket, retrieval (top 5, ≥ 0.65, tenant pre-filter), streamed grounded answer with
    numbered sources; "couldn't find anything" without calling the model when nothing passes the threshold.
+6. Socket access page: socket URL, generate/rotate the static socket token (shown once); a Python `websockets`
+   client using the token in the `Authorization` header got a grounded answer, and the old token was refused (4401)
+   after rotation.
 
-Backend test suite: 240 tests (`pytest -q`), all passing with Postgres, RabbitMQ, MinIO, Qdrant and a Gemini key.
+Backend test suite: 252 tests (`pytest -q`), all passing with Postgres, RabbitMQ, MinIO, Qdrant and a Gemini key.
 
 ## Known gaps
 
@@ -27,6 +30,7 @@ Backend test suite: 240 tests (`pytest -q`), all passing with Postgres, RabbitMQ
 - No dashboard auto-refresh of statuses (Refresh button only); README mentions polling.
 - Redis (rate limiting, sessions) not started: `infra/redis/`, `api/middleware/rate_limit.py` are stubs.
 - WebSocket has no Origin check (the short-lived ticket in the URL is the protection).
+- No rate limiting or usage metering per socket token yet; tokens have no expiry (rotation is the only revocation).
 
 ## Likely next steps
 

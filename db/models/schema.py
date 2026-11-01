@@ -41,6 +41,18 @@ class User(Base):
     business: Mapped[Business] = relationship(back_populates="users")
 
 
+class SocketToken(Base):
+    """A business's static token for server-to-server chat sockets; only its SHA-256 hash is stored."""
+
+    __tablename__ = "socket_tokens"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    business_id: Mapped[UUID] = mapped_column(ForeignKey("businesses.id", ondelete="CASCADE"), unique=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    token_prefix: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class DocumentStatus(StrEnum):
     QUEUED = "QUEUED"
     PROCESSING = "PROCESSING"

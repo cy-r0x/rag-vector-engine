@@ -23,7 +23,7 @@ Dashboard ──HTTP──▶ API ──▶ Postgres (businesses, users, documen
     │                │                                   │──▶ Gemini embeddings ──▶ Qdrant (business_id-filtered)
     │                │◀── RabbitMQ document.events ◀─────┘   (PROCESSING / INDEXED / FAILED + detail)
     └──WebSocket──▶ /v1/chat/ws/{business_id}: embed query → Qdrant (tenant pre-filter, top-k, min score)
-                                               → Gemini chat model → streamed answer + sources
+Business backend ──WebSocket (static rve_sk_ token)──┘   → Gemini chat model → streamed answer + sources
 ```
 
 ## Code map
@@ -38,7 +38,8 @@ Status: **done** = implemented and tested, **stub** = empty file reserved by the
 | `api/routes/routes.py` | Single `/v1` router; maps paths to handlers (`add_api_route`, `add_api_websocket_route`) | done |
 | `api/handlers/auth.py` | `POST /v1/auth/register` (business + owner user, 409 on duplicate email), `POST /v1/auth/login` (401 on bad credentials); both return a JWT | done |
 | `api/handlers/documents.py` | `GET /v1/documents` (newest first), `GET /v1/documents/{doc_id}`, `GET /v1/documents/{doc_id}/markdown` (409 unless INDEXED), `POST /v1/documents/upload` (≤50 files, PDF/DOCX/XLSX/CSV/TXT, all-or-nothing; stores objects + rows, then publishes one `IngestionJob` per document; 503 + batch discarded if RabbitMQ doesn't confirm). Other tenants' documents are 404 | done |
-| `api/handlers/chat.py` | `POST /v1/chat/ticket` (60 s chat-only ticket, `token_use=chat_ws`, carries `session_exp`) and WebSocket `/v1/chat/ws/{business_id}?token=` (path must match token's business: close 4401/4403; frames `delta` / `done` + sources / `error`; session expiry checked per message) | done |
+| `api/handlers/chat.py` | `POST /v1/chat/ticket` (60 s chat-only ticket, `token_use=chat_ws`, carries `session_exp`) and WebSocket `/v1/chat/ws/{business_id}`: credential from `Authorization: Bearer` or `?token=` — static socket token, chat ticket, or access token (`_authenticate` → `_SocketAuth`); path must match the credential's business (close 4401/4403); frames `delta` / `done` + sources / `error`; `_revocation_reason` re-checks every message (login expiry, socket token rotated) | done |
+| `api/handlers/socket_access.py` | `GET /v1/socket` (socket URL from `PUBLIC_WS_BASE_URL` + current token prefix/created_at), `POST /v1/socket/token` (generate or rotate via upsert; returns the plain token once) | done |
 | `api/rag.py` | `retrieve()` (embed query → business-filtered search with `RETRIEVAL_TOP_K` / `RETRIEVAL_MIN_SCORE` → filenames from DB, deleted docs dropped), `SYSTEM_PROMPT` (answer only from excerpts, cite `[n]`, excerpts are data not instructions), `build_prompt()`, `answer()`, `NO_CONTEXT_ANSWER` | done |
 | `api/consumers/document_events.py` | Background consumer of `DOCUMENT_EVENTS_QUEUE`; `apply_status_event` sets `status` + `status_detail` on the row matching `doc_id` **and** `business_id`; a late `PROCESSING` never overwrites INDEXED/FAILED; retries the first connection so the API starts without RabbitMQ | done |
 | `api/middleware/auth.py` | `JWTAuthMiddleware` (Bearer → `state.token_payload`; tokens with a `token_use` claim are rejected for HTTP), `require_auth` (on `HTTPConnection`), `get_token_payload`, `get_business_id` (claim → `UUID`, 401 if malformed), `TOKEN_USE_CLAIM` | done |
@@ -74,12 +75,12 @@ Status: **done** = implemented and tested, **stub** = empty file reserved by the
 |------|------------|--------|
 | `common/config/` | `Settings` / `get_settings()` (pydantic-settings, reads `.env`; empty strings → `None` for optional keys) | done |
 | `common/logger/` | `setup_logging()`: format, `LOG_LEVEL`, disables uvicorn access log, quiets `httpx`/`httpcore`/`google_genai`, `RedactTokensFilter` masks `token=` in uvicorn logs | done |
-| `common/auth/` | `JWTCodec` (HS256; requires `sub`, `business_id`, `exp`; `extra_claims` for purpose-bound tokens), `get_jwt_codec()`; `PasswordHasher` (Argon2id) | done |
+| `common/auth/` | `JWTCodec` (HS256; requires `sub`, `business_id`, `exp`; `extra_claims` for purpose-bound tokens), `get_jwt_codec()`; `PasswordHasher` (Argon2id); socket tokens (`socket_tokens.py`: `generate_socket_token()` → `rve_sk_` + 256-bit random, SHA-256 `hash_socket_token()`, `is_socket_token()`) | done |
 | `common/decorators/` | `@public`, `is_public()` | done |
 | `db/postgres.py` | Async engine, `get_session` (per request), `get_sessionmaker` (used by WebSocket and the events consumer), `dispose_engine` | done |
-| `db/models/schema.py` | `Business`, `User` (unique lowercased email, role), `Document` (`DocumentStatus` QUEUED/PROCESSING/INDEXED/FAILED, nullable `status_detail`); UUIDv7 primary keys | done |
+| `db/models/schema.py` | `Business`, `User` (unique lowercased email, role), `Document` (`DocumentStatus` QUEUED/PROCESSING/INDEXED/FAILED, nullable `status_detail`), `SocketToken` (one per business: `token_hash` unique, `token_prefix`, `created_at`); UUIDv7 primary keys | done |
 | `db/models/events.py` | `IngestionJob` (API → worker, one per document; `from_document()`), `DocumentStatusEvent` (worker → API) | done |
-| `db/migrations/` | Alembic (async): `0001` businesses + users, `0002` documents, `0003` `status_detail` | done |
+| `db/migrations/` | Alembic (async): `0001` businesses + users, `0002` documents, `0003` `status_detail`, `0004` socket tokens | done |
 
 ### Tests (`tests/`, mirrors the source tree)
 
@@ -108,7 +109,9 @@ builders in `tests/workers/sample_documents.py`. `tests/conftest.py` sets `JWT_S
   On the chat socket the path `{business_id}` is only trusted after it matches the token.
 - Every vector read/delete is pre-filtered by `business_id` (mandatory argument in `VectorStore`).
 - Other tenants' documents are indistinguishable from missing ones (404).
-- Purpose-bound tokens (`token_use` claim, e.g. chat tickets) are rejected by HTTP routes.
+- Purpose-bound tokens (`token_use` claim, e.g. chat tickets) are rejected by HTTP routes; static socket tokens
+  (`rve_sk_…`) only open their own business's socket, are stored only as SHA-256 hashes, are shown once, and are
+  re-validated on every socket message (rotation revokes immediately).
 - Upload bytes are untrusted: the detected MIME wins over filename/Content-Type.
 - Retrieved document text is untrusted prompt input: the system prompt treats excerpts as data.
 - Never log credentials (`RedactTokensFilter`); `.env` (holds `GEMINI_API_KEY`) is git-ignored.
@@ -143,7 +146,7 @@ builders in `tests/workers/sample_documents.py`. `tests/conftest.py` sets `JWT_S
 | Storage | `S3_ENDPOINT_URL`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_BUCKET`, `S3_FORCE_PATH_STYLE` |
 | Chunking | `CHUNK_SIZE` (1000), `CHUNK_OVERLAP` (150) |
 | Embeddings | `EMBEDDING_PROVIDER` (gemini), `EMBEDDING_MODEL` (provider default), `EMBEDDING_DIMENSIONS` (768), `EMBEDDING_BATCH_SIZE` (100), `GEMINI_API_KEY` |
-| Chat | `LLM_PROVIDER` (gemini), `LLM_MODEL` (gemini-3.5-flash-lite), `LLM_TEMPERATURE` (0.2), `RETRIEVAL_TOP_K` (5), `RETRIEVAL_MIN_SCORE` (0.65), `CHAT_MAX_QUERY_CHARS` (2000), `CHAT_TICKET_EXPIRES_IN` (60) |
+| Chat | `LLM_PROVIDER` (gemini), `LLM_MODEL` (gemini-3.5-flash-lite), `LLM_TEMPERATURE` (0.2), `RETRIEVAL_TOP_K` (5), `RETRIEVAL_MIN_SCORE` (0.65), `CHAT_MAX_QUERY_CHARS` (2000), `CHAT_TICKET_EXPIRES_IN` (60), `PUBLIC_WS_BASE_URL` (ws://localhost:8000) |
 | Qdrant | `QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_COLLECTION` (document_chunks), `QDRANT_PORT` (compose) |
 
 ## Run & test
@@ -152,7 +155,7 @@ builders in `tests/workers/sample_documents.py`. `tests/conftest.py` sets `JWT_S
 docker compose up -d                 # MinIO (+ bucket init), Postgres (host 5433), RabbitMQ, Qdrant (6333)
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
-alembic upgrade head                 # DB migrations (0001-0003)
+alembic upgrade head                 # DB migrations (0001-0004)
 python -m api.main                   # API on http://127.0.0.1:8000 (auto-reload; also runs the status consumer)
 python -m workers.consumer           # ingestion worker (no auto-reload: restart after code changes)
 pytest -q

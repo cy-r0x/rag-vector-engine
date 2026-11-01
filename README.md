@@ -105,6 +105,7 @@ rag-vector-engine/
 │   ├── handlers/               # Business logic called by routes (routes stay thin)
 │   │   ├── auth.py             # register / login
 │   │   ├── chat.py             # Chat ticket + per-business WebSocket (/v1/chat/ws/{business_id})
+│   │   ├── socket_access.py    # Socket URL + static socket token (generate / rotate)
 │   │   └── documents.py        # Batch document upload (validate, store, record)
 │   ├── rag.py                  # Retrieval (business-filtered, top-k, min score) + grounded prompt
 │   ├── validators/
@@ -471,6 +472,8 @@ Deleting or re-indexing a document that is currently `QUEUED` or `PROCESSING` re
 ### 6. Query via Authenticated WebSocket
 Each business chats over its own socket, `/v1/chat/ws/{business_id}`. Browsers can't set headers on WebSocket connections, so the JWT is passed as the `token` query parameter and verified by the WebSocket route itself. The `{business_id}` in the path selects whose documents are searched, but it is only trusted once it matches the token's `business_id` claim; otherwise the server closes the connection.
 
+The socket accepts three credentials, in an `Authorization: Bearer <token>` header or the `token` query parameter: the business's **static socket token** (for the business's own backend, see [Socket access](#7-socket-access-for-business-backends)), a **chat ticket** (dashboard), or an access token.
+
 Browser clients shouldn't hold the access token, so they first exchange it for a short-lived, chat-only **ticket** (`CHAT_TICKET_EXPIRES_IN`, default 60 s). A ticket only opens the socket (it is rejected as a Bearer token on every HTTP route), and the socket stays usable until the access token it was issued from would have expired:
 
 ```bash
@@ -513,13 +516,55 @@ For every question the server embeds the query (`embed_query`), searches Qdrant 
 
 | Situation | Result |
 |-----------|--------|
-| Missing, invalid, or expired token | Close code `4401` |
+| Missing, invalid, or expired token; rotated socket token | Close code `4401` |
 | Token belongs to another business | Close code `4403` |
-| Login session (access token) has expired | `error` frame, then close code `4401` |
+| Login session (access token) has expired, or the socket token was rotated while connected | `error` frame on the next message, then close code `4401` |
 | Malformed message (not JSON, empty or > `CHAT_MAX_QUERY_CHARS` query) | `error` frame; the socket stays open |
 | Embedding or answer generation fails | `error` frame; the socket stays open |
 
 Token values in URLs are redacted from the server logs.
+
+---
+
+### 7. Socket access for business backends
+Each business can connect its own backend to its chat socket with a **static socket token** (`rve_sk_…`). It is managed from the dashboard's *Socket access* page (both endpoints require the dashboard login):
+
+```bash
+# Socket URL and the current token's prefix (the token itself is never returned again)
+curl http://localhost:8000/v1/socket -H "Authorization: Bearer $ACCESS_TOKEN"
+# {"business_id": "0192f6a4-...", "ws_url": "ws://localhost:8000/v1/chat/ws/0192f6a4-...", "token": {"prefix": "rve_sk_AbC123", "created_at": "..."}}
+
+# Generate the token, or rotate it: the previous token stops working immediately
+curl -X POST http://localhost:8000/v1/socket/token -H "Authorization: Bearer $ACCESS_TOKEN"
+# {"token": "rve_sk_...", "prefix": "rve_sk_AbC123", "created_at": "...", "ws_url": "ws://localhost:8000/v1/chat/ws/0192f6a4-..."}
+```
+
+* Tokens are 256-bit random values; only their SHA-256 hash and a display prefix are stored (`socket_tokens`, one row per business), so the plain token is shown exactly once.
+* `ws_url` is built from `PUBLIC_WS_BASE_URL` (use `wss://…` in production).
+* The business backend connects with `Authorization: Bearer <socket token>` (or `?token=` if its client can't set headers) and then uses the same message protocol as above. The token only opens its own business's socket (`4403` otherwise) and is rejected by every HTTP route.
+* After a rotation, sockets still using the old token get an `error` frame and close code `4401` on their next message, and new connections with it are refused.
+
+```python
+import asyncio, json, os
+import websockets  # pip install websockets
+
+async def ask(question: str) -> None:
+    headers = {"Authorization": f"Bearer {os.environ['RVE_SOCKET_TOKEN']}"}
+    async with websockets.connect(os.environ["RVE_SOCKET_URL"], additional_headers=headers) as socket:
+        await socket.send(json.dumps({"query": question, "session_id": "customer-42"}))
+        answer = ""
+        async for raw in socket:
+            frame = json.loads(raw)
+            if frame["type"] == "delta":
+                answer += frame["content"]
+            elif frame["type"] == "done":
+                print(answer, frame["sources"])
+                break
+            elif frame["type"] == "error":
+                raise RuntimeError(frame["detail"])
+
+asyncio.run(ask("What was revenue growth last quarter?"))
+```
 
 ---
 

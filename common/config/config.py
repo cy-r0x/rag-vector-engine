@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     retrieval_min_score: float = 0.65
     chat_max_query_chars: int = 2000
     chat_ticket_expires_in: int = 60
+    public_ws_base_url: str = "ws://localhost:8000"
 
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str | None = None

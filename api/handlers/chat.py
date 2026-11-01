@@ -1,4 +1,7 @@
-"""Per-business chat over WebSocket: `/v1/chat/ws/{business_id}?token=...`.
+"""Per-business chat over WebSocket: `/v1/chat/ws/{business_id}`.
+
+Credentials, in an `Authorization: Bearer` header or the `token` query parameter: the business's static socket
+token (server-to-server), a chat ticket (dashboard), or an access token.
 
 Client → server: `{"query": "...", "session_id": "optional"}`.
 Server → client, per query: zero or more `{"type": "delta", "content": "..."}` frames with the streamed answer, then
@@ -8,19 +11,22 @@ Server → client, per query: zero or more `{"type": "delta", "content": "..."}`
 import json
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import Depends, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from api.middleware.auth import TOKEN_USE_CLAIM, get_token_payload
 from api.rag import NO_CONTEXT_ANSWER, answer, retrieve
-from common.auth import TokenError, get_jwt_codec
+from common.auth import TokenError, get_jwt_codec, hash_socket_token, is_socket_token
 from common.config import get_settings
 from common.decorators import public
 from db import get_sessionmaker
+from db.models import SocketToken
 from infra.embeddings import Embedder, EmbeddingError, get_embedder
 from infra.llm import ChatModel, ChatModelError, get_chat_model
 from infra.storage.vector_db import VectorStore, get_vector_store
@@ -76,25 +82,26 @@ async def chat_socket(
 ) -> None:
     await websocket.accept()
 
-    claims, reason = _authenticate(token)
-    if claims is None:
+    credential = _bearer_token(websocket.headers.get("authorization")) or token
+    auth, reason = await _authenticate(credential, sessionmaker)
+    if auth is None:
         await websocket.close(code=CLOSE_UNAUTHORIZED, reason=reason)
         return
     # The path names the business to search; it is only trusted once it matches the verified token.
-    if claims["business_id"] != str(business_id):
+    if auth.business_id != business_id:
         logger.warning("Rejected chat socket for business %s: token belongs to another business", business_id)
         await websocket.close(code=CLOSE_FORBIDDEN, reason="Token does not belong to this business")
         return
-    session_exp = claims.get(_SESSION_EXP_CLAIM, claims["exp"])
 
     settings = get_settings()
-    logger.info("Chat socket opened for business %s", business_id)
+    logger.info("Chat socket opened for business %s (%s)", business_id, auth.kind)
     try:
         while True:
             raw = await websocket.receive_text()
-            if time.time() >= session_exp:
-                await websocket.send_json({"type": "error", "detail": "Your session has expired. Please sign in again."})
-                await websocket.close(code=CLOSE_UNAUTHORIZED, reason="Session expired")
+            revoked = await _revocation_reason(auth, sessionmaker)
+            if revoked is not None:
+                await websocket.send_json({"type": "error", "detail": revoked})
+                await websocket.close(code=CLOSE_UNAUTHORIZED, reason=revoked)
                 return
 
             message, error = _parse(raw, settings.chat_max_query_chars)
@@ -159,17 +166,65 @@ async def _respond(
         await websocket.send_json(frame(type="error", detail="Something went wrong. Please try again."))
 
 
-def _authenticate(token: str | None) -> tuple[dict[str, Any] | None, str]:
-    if not token:
+@dataclass(frozen=True)
+class _SocketAuth:
+    business_id: UUID
+    kind: Literal["access token", "chat ticket", "socket token"]
+    session_exp: float | None = None
+    socket_token_hash: str | None = None
+
+
+async def _authenticate(
+    credential: str | None, sessionmaker: async_sessionmaker[AsyncSession]
+) -> tuple[_SocketAuth | None, str]:
+    """Accepts the business's static socket token, a chat ticket, or an access token."""
+    if not credential:
         return None, "Missing token"
+
+    if is_socket_token(credential):
+        token_hash = hash_socket_token(credential)
+        business_id = await _socket_token_business(sessionmaker, token_hash)
+        if business_id is None:
+            return None, "Invalid or rotated socket token"
+        return _SocketAuth(business_id=business_id, kind="socket token", socket_token_hash=token_hash), ""
+
     try:
-        claims = get_jwt_codec().decode(token)
-    except TokenError as exc:
-        return None, str(exc)
+        claims = get_jwt_codec().decode(credential)
+        business_id = UUID(claims["business_id"])
+    except (TokenError, ValueError) as exc:
+        return None, str(exc) if isinstance(exc, TokenError) else "Invalid token"
     token_use = claims.get(TOKEN_USE_CLAIM)
     if token_use not in (None, CHAT_TICKET_USE):
         return None, "Token is not valid for chat"
-    return claims, ""
+    return (
+        _SocketAuth(
+            business_id=business_id,
+            kind="chat ticket" if token_use == CHAT_TICKET_USE else "access token",
+            session_exp=claims.get(_SESSION_EXP_CLAIM, claims["exp"]),
+        ),
+        "",
+    )
+
+
+async def _revocation_reason(auth: _SocketAuth, sessionmaker: async_sessionmaker[AsyncSession]) -> str | None:
+    """Why an open socket may no longer be used: its login session expired, or its socket token was rotated."""
+    if auth.session_exp is not None and time.time() >= auth.session_exp:
+        return "Your session has expired. Please sign in again."
+    if auth.socket_token_hash is not None:
+        if await _socket_token_business(sessionmaker, auth.socket_token_hash) != auth.business_id:
+            return "This socket token was rotated. Connect again with the new token."
+    return None
+
+
+async def _socket_token_business(sessionmaker: async_sessionmaker[AsyncSession], token_hash: str) -> UUID | None:
+    async with sessionmaker() as session:
+        return await session.scalar(select(SocketToken.business_id).where(SocketToken.token_hash == token_hash))
+
+
+def _bearer_token(authorization: str | None) -> str | None:
+    scheme, _, value = (authorization or "").partition(" ")
+    value = value.strip()
+    return value if scheme.lower() == "bearer" and value else None
 
 
 def _parse(raw: str, max_query_chars: int) -> tuple[dict[str, Any] | None, str]:

@@ -38,6 +38,9 @@ Things that went wrong or behaved unexpectedly, and what we do about them.
 - App-wide dependencies also run for WebSocket routes, where a `Request` parameter can't be resolved: `require_auth`
   takes an `HTTPConnection`, and WebSocket endpoints are `@public` and authenticate their `token` query param.
 - uvicorn logs the full WebSocket URL (including `?token=`) through `uvicorn.error`; `RedactTokensFilter` masks it.
+  Log only the socket token prefix, never the token (`Issued socket token rve_sk_xxxxxx…`).
+- Postgres upserts (`sqlalchemy.dialects.postgresql.insert(...).on_conflict_do_update`) keep "one row per business"
+  races safe, e.g. two concurrent token rotations.
 - After `session.commit()` with `expire_on_commit=False`, server-default columns (e.g. `created_at`) are populated
   via RETURNING on Postgres, so `IngestionJob.from_document()` can read them without a lazy load.
 

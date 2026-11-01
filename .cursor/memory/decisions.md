@@ -44,3 +44,13 @@ by accident. If a request contradicts one of these, ask first (see `rules/ask-wh
 - **Browsers use short-lived chat tickets** (`POST /v1/chat/ticket`, 60 s, chat-only) so the access token stays in
   the frontend's httpOnly cookie.
 - **Chat history (7-day retention) deferred;** each question is answered independently (no conversation memory).
+
+## Socket access for business backends
+
+- **One static socket token per business** (`rve_sk_…`) for server-to-server use, managed from the dashboard's
+  Socket access page (`GET /v1/socket`, `POST /v1/socket/token`).
+- **Shown once, stored as a SHA-256 hash** (plus a display prefix), like Stripe/GitHub keys, so a DB leak doesn't
+  expose tokens. Fast hash is fine because the token is 256-bit random.
+- **Rotation revokes immediately:** no grace period; open sockets with the old token are closed on their next
+  message (validity is re-checked per message).
+- **Sent as `Authorization: Bearer`** (servers can set headers), with `?token=` also accepted.

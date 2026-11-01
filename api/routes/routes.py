@@ -1,7 +1,7 @@
 from fastapi import APIRouter, status
 from fastapi.responses import Response
 
-from api.handlers import auth, chat, documents
+from api.handlers import auth, chat, documents, socket_access
 
 router = APIRouter(prefix="/v1")
 
@@ -43,3 +43,11 @@ router.add_api_route(
     response_model=chat.ChatTicket,
 )
 router.add_api_websocket_route("/chat/ws/{business_id}", chat.chat_socket)
+
+router.add_api_route("/socket", socket_access.get_socket_info, methods=["GET"], response_model=socket_access.SocketInfo)
+router.add_api_route(
+    "/socket/token",
+    socket_access.issue_socket_token,
+    methods=["POST"],
+    response_model=socket_access.IssuedSocketToken,
+)
