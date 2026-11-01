@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expires_in: int = 3600
 
+    database_url: str = "postgresql+asyncpg://rve:rve@localhost:5433/rve"
+
     max_upload_bytes: int = 25 * 1024 * 1024
     max_uncompressed_bytes: int = 200 * 1024 * 1024
 

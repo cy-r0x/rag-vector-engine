@@ -13,6 +13,6 @@ def test_health_is_public():
 
 
 @pytest.mark.parametrize("path", ["/v1/auth/register", "/v1/auth/login"])
-def test_auth_routes_are_public_and_not_implemented_yet(path: str):
-    response = client.post(path)
-    assert response.status_code == 501
+def test_auth_routes_are_public(path: str):
+    response = client.post(path, json={})
+    assert response.status_code == 422

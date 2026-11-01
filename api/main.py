@@ -1,3 +1,6 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI
 
 from api.middleware.auth import JWTAuthMiddleware, require_auth
@@ -7,10 +10,18 @@ from common.auth import get_jwt_codec
 from common.config import get_settings
 from common.decorators import public
 from common.logger import setup_logging
+from db import dispose_engine
 
 setup_logging(get_settings().log_level)
 
-app = FastAPI(title="api", dependencies=[Depends(require_auth)])
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    yield
+    await dispose_engine()
+
+
+app = FastAPI(title="api", dependencies=[Depends(require_auth)], lifespan=lifespan)
 app.add_middleware(JWTAuthMiddleware, codec=get_jwt_codec())
 app.add_middleware(RequestLoggingMiddleware)
 app.include_router(router)

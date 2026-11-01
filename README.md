@@ -115,14 +115,17 @@ rag-vector-engine/
 │   ├── logger/
 │   │   └── logger.py           # Log format/level setup (LOG_LEVEL)
 │   ├── auth/
-│   │   └── tokens.py           # JWT sign (encode) & verify (decode)
+│   │   ├── tokens.py           # JWT sign (encode) & verify (decode)
+│   │   └── passwords.py        # Argon2id password hashing
 │   └── decorators/
 │       └── public.py           # @public: mark a route as reachable without a token
 │
 ├── db/                         # Relational database
-│   ├── postgres.py             # SQLAlchemy / asyncpg
+│   ├── postgres.py             # Async SQLAlchemy engine + per-request session (asyncpg)
+│   ├── migrations/             # Alembic (env.py reads DATABASE_URL)
+│   │   └── versions/           # Migration scripts
 │   └── models/
-│       ├── schema.py           # Relational schema
+│       ├── schema.py           # Relational schema (businesses, users)
 │       └── events.py           # RabbitMQ job & status payloads
 │
 ├── infra/                      # External service clients
@@ -147,8 +150,10 @@ rag-vector-engine/
 │   ├── api/
 │   │   ├── test_auth.py        # JWT middleware tests
 │   │   ├── test_file_type.py   # Magic-byte upload validation tests
-│   │   └── test_main.py        # FastAPI app smoke test
+│   │   ├── test_main.py        # FastAPI app smoke test
+│   │   └── test_onboarding.py  # Register / login (integration tests run against Postgres)
 │   ├── common/
+│   │   ├── test_passwords.py   # Password hashing tests
 │   │   └── test_tokens.py      # JWT encode/decode tests
 │   ├── infra/
 │   │   └── storage/
@@ -156,7 +161,8 @@ rag-vector-engine/
 │   └── workers/
 │       └── test_consumer.py    # Consumer integration test (runs against RabbitMQ)
 │
-├── docker-compose.yml          # Local infra (currently MinIO + bucket init, RabbitMQ)
+├── docker-compose.yml          # Local infra (currently MinIO + bucket init, Postgres, RabbitMQ)
+├── alembic.ini                 # Alembic configuration
 ├── .env.example                # Sample environment configurations
 ├── pyproject.toml              # pytest configuration
 ├── requirements.txt            # Python dependencies
@@ -182,12 +188,12 @@ cd rag-vector-engine
 # Copy environment variables
 cp .env.example .env
 
-# Start local infrastructure (currently MinIO and RabbitMQ; Postgres, Redis,
+# Start local infrastructure (currently MinIO, Postgres, and RabbitMQ; Redis
 # and Qdrant are added to docker-compose.yml as they are built)
 docker compose up -d
 ```
 
-The `minio-init` container creates the `documents` bucket and exits. The MinIO console is at http://localhost:9001 (`minioadmin` / `minioadmin`). The RabbitMQ management UI is at http://localhost:15672 (`rve` / `rve`).
+The `minio-init` container creates the `documents` bucket and exits. The MinIO console is at http://localhost:9001 (`minioadmin` / `minioadmin`). The RabbitMQ management UI is at http://localhost:15672 (`rve` / `rve`). Postgres listens on host port **5433** (`POSTGRES_PORT`), so it doesn't clash with a natively installed Postgres on 5432.
 
 ### 3. Install Dependencies
 ```bash
@@ -196,13 +202,20 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-For development and tests, install `requirements-dev.txt` instead and run the suite (MinIO integration tests are skipped automatically if MinIO isn't running):
+For development and tests, install `requirements-dev.txt` instead and run the suite (MinIO, Postgres, and RabbitMQ integration tests are skipped automatically if the service isn't running). Postgres tests create and migrate a separate `rve_test` database (`TEST_DATABASE_URL`):
 ```bash
 pip install -r requirements-dev.txt
 pytest -v
 ```
 
 ### 4. Run Migrations & Start Services
+Apply database migrations:
+```bash
+alembic upgrade head
+```
+
+After changing `db/models/schema.py`, generate a new migration with `alembic revision --autogenerate -m "<description>"` and review it before committing.
+
 Terminal 1 — API Gateway:
 ```bash
 uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
@@ -220,22 +233,35 @@ The frontend lives in a separate repository and talks to this API over HTTP and 
 ## 🔌 API & Integration Guide
 
 ### 1. Onboard a Business
-Create a business partition and receive a signed JWT access token. Send it as `Authorization: Bearer <token>` on every other request.
+Registering creates the business and its first user (role `owner`) in one transaction and returns a signed JWT access token. Send it as `Authorization: Bearer <token>` on every other request.
 
 ```bash
-curl -X POST http://localhost:8000/v1/tenants/onboard \
+curl -X POST http://localhost:8000/v1/auth/register \
   -H "Content-Type: application/json" \
-  -d '{"business_name": "Acme Corp", "contact_email": "admin@acme.com"}'
+  -d '{"business_name": "Acme Corp", "email": "admin@acme.com", "password": "s3cret-passw0rd"}'
 ```
 
-**Response:**
+**Response (`201 Created`):**
 ```json
 {
-  "business_id": "biz_98a72b1c",
+  "business_id": "biz_9b4fdb17beb83573",
+  "user_id": "usr_4ab0ce2bebc31937",
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "token_type": "bearer",
   "expires_in": 3600
 }
+```
+
+* Emails are stored lowercased and are unique across the platform; registering an existing email returns `409 Conflict`.
+* Passwords must be 8–128 characters and are stored as Argon2id hashes (`common/auth/passwords.py`).
+* The token's `sub` claim is the `user_id`; its `business_id` claim scopes every later request.
+
+When the token expires, log in again for a new one (same response shape, `200 OK`). A wrong password and an unknown email both return the same `401`:
+
+```bash
+curl -X POST http://localhost:8000/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "admin@acme.com", "password": "s3cret-passw0rd"}'
 ```
 
 The examples below assume the token is stored in a shell variable:
