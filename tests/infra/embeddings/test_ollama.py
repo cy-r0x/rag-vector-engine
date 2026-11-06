@@ -75,6 +75,15 @@ async def test_empty_text_is_rejected():
     assert client.calls == []
 
 
+async def test_read_timeout_is_reported_as_a_timeout():
+    embedder = _embedder(FakeClient(error=httpx.ReadTimeout("")))
+
+    with pytest.raises(EmbeddingError, match="timed out") as timeout_error:
+        await embedder.embed_documents(["alpha"])
+
+    assert timeout_error.value.retryable
+
+
 async def test_connection_errors_are_retryable_and_missing_models_are_not():
     down = _embedder(FakeClient(error=httpx.ConnectError("refused")))
     with pytest.raises(EmbeddingError, match="unreachable") as connect_error:

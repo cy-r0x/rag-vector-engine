@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     embedding_provider: str = "ollama"
     embedding_model: str | None = None
     embedding_dimensions: int = 1024
-    embedding_batch_size: int = 32
+    embedding_batch_size: int = 8
 
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_num_ctx: int = 8192

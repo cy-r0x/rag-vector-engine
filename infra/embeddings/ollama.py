@@ -45,7 +45,15 @@ class OllamaEmbedder:
         self._model = model
         self._dimensions = dimensions
         self._batch_size = batch_size
-        self._client = client if client is not None else httpx.AsyncClient(base_url=self._base_url, timeout=120.0)
+        # The first batch also waits for Ollama to load the model into GPU memory.
+        self._client = (
+            client
+            if client is not None
+            else httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=httpx.Timeout(connect=10.0, read=600.0, write=60.0, pool=10.0),
+            )
+        )
         self._owns_client = client is None
 
     @classmethod
@@ -106,8 +114,14 @@ class OllamaEmbedder:
                 f"Ollama embedding request failed ({exc.response.status_code}): {body}",
                 retryable=exc.response.status_code in _RETRYABLE_STATUS,
             ) from exc
+        except httpx.TimeoutException as exc:
+            raise EmbeddingError(
+                f"Ollama timed out embedding {len(texts)} texts at {self._base_url} ({type(exc).__name__})",
+                retryable=True,
+            ) from exc
         except httpx.RequestError as exc:
-            raise EmbeddingError(f"Ollama is unreachable at {self._base_url}: {exc}", retryable=True) from exc
+            detail = str(exc).strip() or type(exc).__name__
+            raise EmbeddingError(f"Ollama is unreachable at {self._base_url}: {detail}", retryable=True) from exc
 
         embeddings = response.json().get("embeddings") or []
         if len(embeddings) != len(texts):
