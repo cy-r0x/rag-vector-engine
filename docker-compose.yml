@@ -34,22 +34,6 @@ services:
         mc mb --ignore-existing "local/$$S3_BUCKET"
     restart: "no"
 
-  postgres:
-    image: postgres:17
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-rve}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rve}
-      POSTGRES_DB: ${POSTGRES_DB:-rve}
-    ports:
-      - "${POSTGRES_PORT:-5433}:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-
   rabbitmq:
     image: rabbitmq:4.1-management
     environment:
@@ -80,6 +64,5 @@ services:
 
 volumes:
   minio_data:
-  postgres_data:
   rabbitmq_data:
   qdrant_data:

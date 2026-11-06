@@ -2,21 +2,31 @@ import pytest
 
 from common.config import Settings
 from infra.embeddings import PROVIDERS, EmbeddingConfigError, create_embedder
-from infra.embeddings.gemini import GeminiEmbedder
+from infra.embeddings.ollama import OllamaEmbedder
 
 
-def test_gemini_is_the_default_provider():
-    embedder = create_embedder(Settings(gemini_api_key="key"))
-    assert isinstance(embedder, GeminiEmbedder)
-    assert (embedder.model, embedder.dimensions) == ("gemini-embedding-001", 768)
+def test_ollama_is_the_default_provider():
+    assert Settings.model_fields["embedding_provider"].default == "ollama"
+
+    embedder = create_embedder(
+        Settings(
+            embedding_model="",
+            embedding_dimensions=1024,
+            embedding_batch_size=32,
+            ollama_base_url="http://127.0.0.1:11434",
+        )
+    )
+    assert embedder.provider == "ollama"
+    assert (embedder.model, embedder.dimensions) == ("qwen3-embedding:0.6b", 1024)
 
 
 def test_provider_name_is_case_insensitive():
-    assert isinstance(create_embedder(Settings(embedding_provider=" Gemini ", gemini_api_key="key")), GeminiEmbedder)
+    embedder = create_embedder(Settings(embedding_provider=" Ollama ", ollama_base_url="http://127.0.0.1:11434"))
+    assert isinstance(embedder, OllamaEmbedder)
 
 
 def test_unknown_provider_lists_the_known_ones():
-    with pytest.raises(EmbeddingConfigError, match="Unknown EMBEDDING_PROVIDER 'acme'.*gemini"):
+    with pytest.raises(EmbeddingConfigError, match="Unknown EMBEDDING_PROVIDER 'acme'.*ollama"):
         create_embedder(Settings(embedding_provider="acme"))
 
 

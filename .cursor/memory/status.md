@@ -7,16 +7,16 @@ Last updated: 2026-11-01.
 1. Register / log in (dashboard login and register pages; JWT in an httpOnly cookie on the frontend).
 2. Upload documents (browser checks + server magic-byte validation, all-or-nothing, up to 200 MB per batch via a
    streaming Next.js route handler).
-3. Worker: extract (PDF text layer, DOCX, XLSX, CSV, TXT) → chunk → embed (Gemini, 768 dims) → upsert to Qdrant
+3. Worker: extract (PDF text layer, DOCX, XLSX, CSV, TXT) → chunk → embed (Ollama qwen3-embedding:0.6b, 1024 dims) → upsert to Qdrant
    under the business → `INDEXED`; failures show their reason in the dashboard.
 4. Document list with statuses, Markdown viewer per indexed document.
-5. Chat page: per-business WebSocket, retrieval (top 5, ≥ 0.65, tenant pre-filter), streamed grounded answer with
+5. Chat page: per-business WebSocket, retrieval (top 5, ≥ 0.65, tenant pre-filter), streamed grounded answer from Ollama with
    numbered sources; "couldn't find anything" without calling the model when nothing passes the threshold.
 6. Socket access page: socket URL, generate/rotate the static socket token (shown once); a Python `websockets`
    client using the token in the `Authorization` header got a grounded answer, and the old token was refused (4401)
    after rotation.
 
-Backend test suite: 252 tests (`pytest -q`), all passing with Postgres, RabbitMQ, MinIO, Qdrant and a Gemini key.
+Backend test suite: `pytest -q`. Postgres, RabbitMQ, MinIO, and Qdrant integration tests skip when that service is down.
 
 ## Known gaps
 

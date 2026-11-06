@@ -36,13 +36,15 @@ class Settings(BaseSettings):
     chunk_size: int = 1000
     chunk_overlap: int = 150
 
-    embedding_provider: str = "gemini"
+    embedding_provider: str = "ollama"
     embedding_model: str | None = None
-    embedding_dimensions: int = 768
-    embedding_batch_size: int = 100
-    gemini_api_key: str | None = None
+    embedding_dimensions: int = 1024
+    embedding_batch_size: int = 32
 
-    llm_provider: str = "gemini"
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_num_ctx: int = 8192
+
+    llm_provider: str = "ollama"
     llm_model: str | None = None
     llm_temperature: float = 0.2
 
@@ -62,7 +64,6 @@ class Settings(BaseSettings):
         "s3_secret_access_key",
         "embedding_model",
         "llm_model",
-        "gemini_api_key",
         "qdrant_api_key",
         mode="before",
     )

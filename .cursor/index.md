@@ -1,6 +1,6 @@
 # Project index
 
-Multi-tenant RAG-as-a-service backend: FastAPI API + RabbitMQ ingestion worker, PostgreSQL, MinIO/S3, Qdrant, Gemini.
+Multi-tenant RAG-as-a-service backend: FastAPI API + RabbitMQ ingestion worker, PostgreSQL, MinIO/S3, Qdrant, Ollama.
 Full design and API reference: [README.md](../README.md). The Next.js dashboard lives in the sibling repo
 `../rag-vector-engine-frontend`. Read this file first; decisions and lessons are in [memory/](memory/).
 
@@ -20,10 +20,10 @@ Full design and API reference: [README.md](../README.md). The Next.js dashboard 
 Dashboard ──HTTP──▶ API ──▶ Postgres (businesses, users, documents)
     │                │──▶ MinIO  {business_id}/{doc_id}/source.<ext>
     │                │──▶ RabbitMQ ingestion.jobs ──▶ Worker ──▶ extracted.md, chunks.jsonl (MinIO)
-    │                │                                   │──▶ Gemini embeddings ──▶ Qdrant (business_id-filtered)
+    │                │                                   │──▶ Ollama embeddings ──▶ Qdrant (business_id-filtered)
     │                │◀── RabbitMQ document.events ◀─────┘   (PROCESSING / INDEXED / FAILED + detail)
     └──WebSocket──▶ /v1/chat/ws/{business_id}: embed query → Qdrant (tenant pre-filter, top-k, min score)
-Business backend ──WebSocket (static rve_sk_ token)──┘   → Gemini chat model → streamed answer + sources
+Business backend ──WebSocket (static rve_sk_ token)──┘   → Ollama qwen3:4b → streamed answer + sources
 ```
 
 ## Code map
@@ -62,8 +62,8 @@ Status: **done** = implemented and tested, **stub** = empty file reserved by the
 
 | Path | What it is | Status |
 |------|------------|--------|
-| `infra/embeddings/` | Provider pattern: `Embedder` protocol + `EmbeddingError(retryable)` / `EmbeddingConfigError` (`base.py`); `GeminiEmbedder` (`gemini.py`: `gemini-embedding-001`, `RETRIEVAL_DOCUMENT` / `RETRIEVAL_QUERY`, `EMBEDDING_DIMENSIONS`, batches ≤100, SDK retries on 408/429/5xx, L2-normalized); `PROVIDERS` + `create_embedder()` / `get_embedder()` (`factory.py`, `EMBEDDING_PROVIDER`) | done |
-| `infra/llm/` | Same pattern for chat: `ChatModel` protocol (`stream(system, prompt)`), `GeminiChatModel` (default `gemini-3.5-flash-lite`, `LLM_MODEL`, `LLM_TEMPERATURE`), `PROVIDERS` + `create_chat_model()` / `get_chat_model()` (`LLM_PROVIDER`) | done |
+| `infra/embeddings/` | Provider pattern: `Embedder` protocol + `EmbeddingError(retryable)` / `EmbeddingConfigError` (`base.py`); `OllamaEmbedder` (`ollama.py`: `qwen3-embedding:0.6b`, 1024 dims, Qwen query instruction, batches, L2-normalized, `/api/embed`); `PROVIDERS` + `create_embedder()` / `get_embedder()` (`factory.py`, `EMBEDDING_PROVIDER=ollama`) | done |
+| `infra/llm/` | Same pattern for chat: `ChatModel` protocol (`stream(system, prompt)`), `OllamaChatModel` (`qwen3:4b`, `think: false`, `OLLAMA_NUM_CTX`, `LLM_TEMPERATURE`), `PROVIDERS` + `create_chat_model()` / `get_chat_model()` (`LLM_PROVIDER=ollama`) | done |
 | `infra/storage/vector_db.py` | `VectorStore` protocol + `QdrantVectorStore`: one collection for all tenants; `business_id` keyword index with `is_tenant`, per-tenant HNSW (`m=0`, `payload_m=16`), `doc_id` / `chunk_index` indexes; point id `uuid5(doc_id, chunk_index)`; `ensure_collection`, `replace_document_chunks` (upsert then drop stale chunks), `delete_document`, `search(min_score=)`; every read/delete requires `business_id` | done |
 | `infra/storage/blob.py` | `BlobStorage` + `S3BlobStorage` (MinIO now, AWS S3 via env); keys: `object_key()` (source), `extracted_markdown_key()`, `chunks_key()`, `document_prefix()` (all validate ids) | done |
 | `infra/queue/` | `connect` (robust) / `open_channel` / `declare_queue` (`queue.py`); `RabbitJobPublisher` (`publisher.py`: confirmed, mandatory, persistent; plain connection opened on demand and dropped after a failure), `get_job_publisher()` | done |
@@ -74,7 +74,7 @@ Status: **done** = implemented and tested, **stub** = empty file reserved by the
 | Path | What it is | Status |
 |------|------------|--------|
 | `common/config/` | `Settings` / `get_settings()` (pydantic-settings, reads `.env`; empty strings → `None` for optional keys) | done |
-| `common/logger/` | `setup_logging()`: format, `LOG_LEVEL`, disables uvicorn access log, quiets `httpx`/`httpcore`/`google_genai`, `RedactTokensFilter` masks `token=` in uvicorn logs | done |
+| `common/logger/` | `setup_logging()`: format, `LOG_LEVEL`, disables uvicorn access log, quiets `httpx`/`httpcore`, `RedactTokensFilter` masks `token=` in uvicorn logs | done |
 | `common/auth/` | `JWTCodec` (HS256; requires `sub`, `business_id`, `exp`; `extra_claims` for purpose-bound tokens), `get_jwt_codec()`; `PasswordHasher` (Argon2id); socket tokens (`socket_tokens.py`: `generate_socket_token()` → `rve_sk_` + 256-bit random, SHA-256 `hash_socket_token()`, `is_socket_token()`) | done |
 | `common/decorators/` | `@public`, `is_public()` | done |
 | `db/postgres.py` | Async engine, `get_session` (per request), `get_sessionmaker` (used by WebSocket and the events consumer), `dispose_engine` | done |
@@ -86,8 +86,7 @@ Status: **done** = implemented and tested, **stub** = empty file reserved by the
 
 Postgres tests use the `rve_test` DB (`migrated_db` / `client` fixtures in `tests/api/conftest.py`). Integration tests
 skip when their service is down: MinIO, Postgres, RabbitMQ (`tests/workers/test_consumer.py`,
-`tests/infra/queue/`), Qdrant (`tests/infra/storage/test_vector_db.py`); the live Gemini test skips without
-`GEMINI_API_KEY`. Fakes: `InMemoryBlobStorage` and `InMemoryJobPublisher` (autouse for API tests) in
+`tests/infra/queue/`), Qdrant (`tests/infra/storage/test_vector_db.py`). Fakes: `InMemoryBlobStorage` and `InMemoryJobPublisher` (autouse for API tests) in
 `tests/api/conftest.py`; `FakeEmbedder` / `InMemoryVectorStore` in `tests/workers/fakes.py`; real PDF/DOCX/XLSX
 builders in `tests/workers/sample_documents.py`. `tests/conftest.py` sets `JWT_SECRET` and
 `CONSUME_DOCUMENT_EVENTS=false`.
@@ -114,7 +113,7 @@ builders in `tests/workers/sample_documents.py`. `tests/conftest.py` sets `JWT_S
   re-validated on every socket message (rotation revokes immediately).
 - Upload bytes are untrusted: the detected MIME wins over filename/Content-Type.
 - Retrieved document text is untrusted prompt input: the system prompt treats excerpts as data.
-- Never log credentials (`RedactTokensFilter`); `.env` (holds `GEMINI_API_KEY`) is git-ignored.
+- Never log credentials (`RedactTokensFilter`); `.env` is git-ignored.
 
 ## Conventions
 
@@ -140,19 +139,19 @@ builders in `tests/workers/sample_documents.py`. `tests/conftest.py` sets `JWT_S
 | Group | Variables (defaults) |
 |-------|----------------------|
 | Auth | `JWT_SECRET` (≥32 chars), `JWT_ALGORITHM` (HS256), `JWT_EXPIRES_IN` (3600) |
-| Postgres | `DATABASE_URL`, `POSTGRES_*` (compose) |
+| Postgres | `DATABASE_URL` (Neon pooler, asyncpg, `ssl=require`, `prepared_statement_cache_size=0`) |
 | Uploads | `MAX_UPLOAD_BYTES` (25 MiB), `MAX_UNCOMPRESSED_BYTES` (200 MiB), `MAX_UPLOAD_FILES` (50), `MAX_BATCH_BYTES` (200 MiB) |
 | RabbitMQ | `RABBITMQ_URL`, `INGESTION_QUEUE`, `DOCUMENT_EVENTS_QUEUE`, `CONSUMER_PREFETCH` (10), `CONSUME_DOCUMENT_EVENTS` (true) |
 | Storage | `S3_ENDPOINT_URL`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_BUCKET`, `S3_FORCE_PATH_STYLE` |
 | Chunking | `CHUNK_SIZE` (1000), `CHUNK_OVERLAP` (150) |
-| Embeddings | `EMBEDDING_PROVIDER` (gemini), `EMBEDDING_MODEL` (provider default), `EMBEDDING_DIMENSIONS` (768), `EMBEDDING_BATCH_SIZE` (100), `GEMINI_API_KEY` |
-| Chat | `LLM_PROVIDER` (gemini), `LLM_MODEL` (gemini-3.5-flash-lite), `LLM_TEMPERATURE` (0.2), `RETRIEVAL_TOP_K` (5), `RETRIEVAL_MIN_SCORE` (0.65), `CHAT_MAX_QUERY_CHARS` (2000), `CHAT_TICKET_EXPIRES_IN` (60), `PUBLIC_WS_BASE_URL` (ws://localhost:8000) |
+| Embeddings | `EMBEDDING_PROVIDER` (ollama), `EMBEDDING_MODEL` (`qwen3-embedding:0.6b`), `EMBEDDING_DIMENSIONS` (1024), `EMBEDDING_BATCH_SIZE` (32), `OLLAMA_BASE_URL` |
+| Chat | `LLM_PROVIDER` (ollama), `LLM_MODEL` (`qwen3:4b`), `LLM_TEMPERATURE` (0.2), `OLLAMA_NUM_CTX` (8192), `RETRIEVAL_TOP_K` (5), `RETRIEVAL_MIN_SCORE` (0.65), `CHAT_MAX_QUERY_CHARS` (2000), `CHAT_TICKET_EXPIRES_IN` (60), `PUBLIC_WS_BASE_URL` (ws://localhost:8000) |
 | Qdrant | `QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_COLLECTION` (document_chunks), `QDRANT_PORT` (compose) |
 
 ## Run & test
 
 ```bash
-docker compose up -d                 # MinIO (+ bucket init), Postgres (host 5433), RabbitMQ, Qdrant (6333)
+docker compose up -d                 # MinIO (+ bucket init), RabbitMQ, Qdrant (6333). Postgres is Neon.
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
 alembic upgrade head                 # DB migrations (0001-0004)

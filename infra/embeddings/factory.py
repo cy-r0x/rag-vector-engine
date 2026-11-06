@@ -11,14 +11,14 @@ from common.config import Settings, get_settings
 from infra.embeddings.base import Embedder, EmbeddingConfigError
 
 
-def _gemini(settings: Settings) -> Embedder:
-    from infra.embeddings.gemini import GeminiEmbedder
+def _ollama(settings: Settings) -> Embedder:
+    from infra.embeddings.ollama import OllamaEmbedder
 
-    return GeminiEmbedder.from_settings(settings)
+    return OllamaEmbedder.from_settings(settings)
 
 
 PROVIDERS: dict[str, Callable[[Settings], Embedder]] = {
-    "gemini": _gemini,
+    "ollama": _ollama,
 }
 
 

@@ -36,7 +36,7 @@ flowchart TD
         Router{"File type?"}
         Extractor["Direct Extraction<br/>(PDF text layer, DOCX, XLSX, CSV)"]
         OCR["LightOn OCR<br/>(Images & Scanned PDFs)"]
-        Chunker["Markdown Chunker + Embedder<br/>(Gemini; pluggable provider)"]
+        Chunker["Markdown Chunker + Embedder<br/>(Ollama qwen3-embedding)"]
         StatusQueue[["RabbitMQ: document.events"]]
     end
 
@@ -68,7 +68,7 @@ flowchart TD
     WSRouter -->|2. Query Embedding| WSRouter
     WSRouter -->|"3. Prefiltered Vector Search<br/>(business_id == caller)"| VectorDB
     VectorDB -->|Top-K Markdown Chunks| WSRouter
-    WSRouter -->|4. Prompt + Context| LLM["OpenAI / LLM Provider"]
+    WSRouter -->|4. Prompt + Context| LLM["Ollama qwen3:4b"]
     LLM -->|5. Token Stream| WSRouter
     WSRouter -->|"6. WebSocket Frames<br/>(delta / done + sources)"| TenantWS
     WSRouter -->|7. Save Chat Turn| PG
@@ -82,7 +82,7 @@ flowchart TD
 * **Byte-Level File Validation:** Uploaded files are untrusted. The client-supplied `Content-Type` header and file extension are ignored; the real MIME type is detected from the file's magic bytes and checked against an allowlist before anything is stored or queued (see [Upload Validation](#-upload-validation)).
 * **Direct Extraction First, OCR Only When Needed:** Text-based files are parsed natively into Markdown (PDF text layer, DOCX headings/tables, XLSX/CSV sheets as Markdown tables), which is faster and more accurate than OCR and needs no GPU. Only images (`.png`, `.jpg`, `.tiff`) and scanned PDFs without a text layer are routed to **LightOn OCR**, which transcribes multi-column layouts, tables, and forms into structured Markdown.
 * **Semantic & Markdown-Aware Chunking:** Chunks along `#`, `##`, and `###` headers while keeping tables intact. Metadata paths are prepended to every chunk vector.
-* **Pluggable Embeddings:** Embeddings come from Gemini (`gemini-embedding-001`, 768 dimensions by default) behind a provider interface in `infra/embeddings/`. Callers depend only on the `Embedder` protocol (`embed_documents`, `embed_query`); `EMBEDDING_PROVIDER` picks the implementation from a registry, so switching providers means adding one module and one registry entry. The same provider, model, and dimensions must be used for indexing and for query embedding.
+* **Pluggable Embeddings:** Embeddings come from Ollama on the local GPU (`qwen3-embedding:0.6b`, 1024 dimensions) behind a provider interface in `infra/embeddings/`. Callers depend only on the `Embedder` protocol (`embed_documents`, `embed_query`); `EMBEDDING_PROVIDER` picks the implementation from a registry, so adding a provider means one module and one registry entry. The same model and dimensions must be used for indexing and for query embedding. Chat answers use Ollama `qwen3:4b` (`LLM_PROVIDER`).
 * **Reliable Async Processing:** Ingestion jobs flow through a RabbitMQ work queue with retries and a Dead-Letter Queue (DLQ). Document status changes (`PROCESSING`, `INDEXED`, `FAILED`) are published to a RabbitMQ `document.events` queue and consumed by the API to update PostgreSQL.
 * **Status by Polling:** The dashboard polls `GET /v1/documents` to show live document status; there is no push channel for status updates.
 * **Deletion & Re-indexing:** Tenants can delete a document (raw file, vectors, and metadata) or re-index it from the stored source file, e.g. after changing the chunker or embedding model.
@@ -137,11 +137,11 @@ rag-vector-engine/
 ├── infra/                      # External service clients
 │   ├── embeddings/
 │   │   ├── base.py             # Embedder protocol (provider interface) + errors
-│   │   ├── gemini.py           # Gemini provider (google-genai): batched, retried, L2-normalized
+│   │   ├── ollama.py           # Ollama provider (qwen3-embedding, local GPU)
 │   │   └── factory.py          # Provider registry; EMBEDDING_PROVIDER selects the implementation
 │   ├── llm/
 │   │   ├── base.py             # ChatModel protocol (streaming) + errors
-│   │   ├── gemini.py           # Gemini chat provider (streamed generate_content)
+│   │   ├── ollama.py           # Ollama chat provider (qwen3:4b, streamed /api/chat)
 │   │   └── factory.py          # Provider registry; LLM_PROVIDER selects the implementation
 │   ├── queue/
 │   │   ├── queue.py            # RabbitMQ connect / channel / standard queue declaration
@@ -210,21 +210,24 @@ cd rag-vector-engine
 # Copy environment variables
 cp .env.example .env
 
-# Start local infrastructure (MinIO, Postgres, RabbitMQ, and Qdrant; Redis is
-# added to docker-compose.yml when it is built)
+# Start local infrastructure (MinIO, RabbitMQ, and Qdrant; Redis is
+# added to docker-compose.yml when it is built). Postgres is Neon, via DATABASE_URL.
 docker compose up -d
 ```
 
-The `minio-init` container creates the `documents` bucket and exits. Qdrant listens on http://localhost:6333 (`QDRANT_PORT`; dashboard at `/dashboard`); the worker creates the `document_chunks` collection on startup. The MinIO console is at http://localhost:9001 (`minioadmin` / `minioadmin`). The RabbitMQ management UI is at http://localhost:15672 (`rve` / `rve`). Postgres listens on host port **5433** (`POSTGRES_PORT`), so it doesn't clash with a natively installed Postgres on 5432.
+The `minio-init` container creates the `documents` bucket and exits. Qdrant listens on http://localhost:6333 (`QDRANT_PORT`; dashboard at `/dashboard`); the worker creates the `document_chunks` collection on startup. The MinIO console is at http://localhost:9001 (`minioadmin` / `minioadmin`). The RabbitMQ management UI is at http://localhost:15672 (`rve` / `rve`). Postgres is the Neon database in `DATABASE_URL` (pooled host, `ssl=require`).
 
 ### 3. Install Dependencies
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+# Embeddings and chat use a local Ollama server (GPU when Ollama can see one):
+# ollama pull qwen3-embedding:0.6b
+# ollama pull qwen3:4b
 ```
 
-For development and tests, install `requirements-dev.txt` instead and run the suite (MinIO, Postgres, RabbitMQ, and Qdrant integration tests are skipped automatically if the service isn't running, and the live Gemini test if `GEMINI_API_KEY` is unset). Postgres tests create and migrate a separate `rve_test` database (`TEST_DATABASE_URL`):
+For development and tests, install `requirements-dev.txt` instead and run the suite (MinIO, Postgres, RabbitMQ, and Qdrant integration tests are skipped automatically if the service isn't running). Postgres tests create and migrate a separate `rve_test` database (`TEST_DATABASE_URL`):
 ```bash
 pip install -r requirements-dev.txt
 pytest -v
@@ -330,7 +333,7 @@ Next, `workers/chunker.py` splits the Markdown with a simple paragraph packer: b
 {"index": 0, "text": "## Page 1\n\nQuarterly revenue grew ...", "start": 0, "end": 918}
 ```
 
-The chunks are then embedded (`infra/embeddings`, Gemini by default) and upserted into Qdrant under the document's `business_id` (`workers/embedder.py`), and the worker reports `INDEXED`. Documents that can't be processed are reported as `FAILED` with a `detail`: PDFs without a text layer (scanned; OCR is not available yet), password-protected or damaged files, files with no text, a missing source file, or input the embedding provider rejects. Storage, RabbitMQ and Qdrant errors, and transient embedding errors (rate limits, provider outages), requeue the job instead:
+The chunks are then embedded (`infra/embeddings`, Ollama `qwen3-embedding:0.6b` on the local GPU by default) and upserted into Qdrant under the document's `business_id` (`workers/embedder.py`), and the worker reports `INDEXED`. Documents that can't be processed are reported as `FAILED` with a `detail`: PDFs without a text layer (scanned; OCR is not available yet), password-protected or damaged files, files with no text, a missing source file, or input the embedding provider rejects. Storage, RabbitMQ and Qdrant errors, and transient embedding errors (rate limits, provider outages), requeue the job instead:
 
 ```json
 {
@@ -506,7 +509,7 @@ socket.onmessage = (event) => {
 };
 ```
 
-For every question the server embeds the query (`embed_query`), searches Qdrant pre-filtered by the authenticated `business_id`, and keeps at most `RETRIEVAL_TOP_K` chunks (default 5) whose cosine similarity is at least `RETRIEVAL_MIN_SCORE` (default 0.65). Those excerpts go to the chat model (`infra/llm`, Gemini `gemini-3.5-flash-lite` by default via `LLM_MODEL`), which is instructed to answer only from them, cite them as `[1]`, `[2]`, and treat their content as data rather than instructions. If no chunk passes the threshold, the answer is "I couldn't find anything in your documents that answers this question." and the model isn't called. The `done` frame lists the sources:
+For every question the server embeds the query (`embed_query`), searches Qdrant pre-filtered by the authenticated `business_id`, and keeps at most `RETRIEVAL_TOP_K` chunks (default 5) whose cosine similarity is at least `RETRIEVAL_MIN_SCORE` (default 0.65). Those excerpts go to the chat model (`infra/llm`, Ollama `qwen3:4b` via `LLM_MODEL`), which is instructed to answer only from them, cite them as `[1]`, `[2]`, and treat their content as data rather than instructions. If no chunk passes the threshold, the answer is "I couldn't find anything in your documents that answers this question." and the model isn't called. The `done` frame lists the sources:
 
 ```json
 {"type": "done", "session_id": "client_session_442", "sources": [

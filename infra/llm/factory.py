@@ -11,14 +11,14 @@ from common.config import Settings, get_settings
 from infra.llm.base import ChatModel, ChatModelConfigError
 
 
-def _gemini(settings: Settings) -> ChatModel:
-    from infra.llm.gemini import GeminiChatModel
+def _ollama(settings: Settings) -> ChatModel:
+    from infra.llm.ollama import OllamaChatModel
 
-    return GeminiChatModel.from_settings(settings)
+    return OllamaChatModel.from_settings(settings)
 
 
 PROVIDERS: dict[str, Callable[[Settings], ChatModel]] = {
-    "gemini": _gemini,
+    "ollama": _ollama,
 }
 
 

@@ -18,13 +18,17 @@ Things that went wrong or behaved unexpectedly, and what we do about them.
 - `rabbitmq-diagnostics check_port_connectivity` passes before the broker accepts AMQP handshakes; use
   `check_running` before testing reconnects.
 
-## Gemini
+## Ollama / Qwen
 
-- **Models get retired for new keys:** `gemini-2.5-flash` returned 404 "no longer available to new users". List
-  models with the key (`client.models.list()`) and probe with a timeout before picking one.
-- Heavily loaded models return 503/504; the SDK's `HttpRetryOptions` handles transient codes. Embedding errors carry
-  `retryable` so the worker requeues transient failures but fails documents whose input was rejected (4xx).
-- Only Gemini's full-size (3072) embedding output is pre-normalized; reduced dimensions must be L2-normalized.
+- Qwen3-Embedding queries must use the `Instruct: …` / `Query:` prefix. Documents are embedded as raw text.
+  Skipping the prefix collapses retrieval.
+- `qwen3` chat thinks by default. The chat client sends `think: false`, or the streamed answer is reasoning
+  instead of the grounded reply.
+- Ollama's stock context is too small for five retrieved chunks. `OLLAMA_NUM_CTX` (8192) is sent on each request.
+- A connection error is retryable (worker requeues). A missing model (HTTP 404) is not, so the document fails
+  with a detail instead of looping. Pull with `ollama pull qwen3-embedding:0.6b` and `ollama pull qwen3:4b`.
+- Embedding errors carry `retryable` so the worker requeues transient failures but fails documents whose input
+  was rejected.
 
 ## Qdrant
 

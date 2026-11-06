@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Multi-tenant RAG-as-a-service backend (FastAPI API + RabbitMQ worker + Postgres + MinIO + Qdrant + Gemini).
+Multi-tenant RAG-as-a-service backend (FastAPI API + RabbitMQ worker + Postgres + MinIO + Qdrant + Ollama).
 
 ## Start here
 
@@ -8,7 +8,7 @@ Multi-tenant RAG-as-a-service backend (FastAPI API + RabbitMQ worker + Postgres 
    and how to run everything.
 2. Check [`.cursor/memory/`](.cursor/memory/) before designing anything:
    - `decisions.md`: choices already made with the user (and why); don't silently reverse them.
-   - `lessons.md`: gotchas found the hard way (aio-pika, Gemini, Qdrant, FastAPI WebSockets).
+   - `lessons.md`: gotchas found the hard way (aio-pika, Ollama, Qdrant, FastAPI WebSockets).
    - `status.md`: what works today, known gaps, next steps.
 3. Follow [`.cursor/rules/ask-when-unclear.mdc`](.cursor/rules/ask-when-unclear.mdc): ask (AskQuestion, recommended
    option first) when a request is ambiguous, touches architecture/dependencies, or is destructive.
